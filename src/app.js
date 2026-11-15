@@ -1607,7 +1607,7 @@ function sessionZip(list, plan) {
       location: m.location || null, keywords: B.keywordPaths(fm) });
   });
   var manifest = { format: 'ballistic-session', version: 1, app: 'Ballistic Foley Lab', saved: isoLocal(new Date()), session: RV.session ? RV.session.id : '',
-    plan: plan ? { id: plan.id, name: plan.name, project: plan.project, shots: plan.shots.map(function (s) { return { id: s.id, name: s.name, tags: s.tags, takes: s.takes, ucs: s.ucs }; }) } : null,
+    plan: plan ? { id: plan.id, name: plan.name, project: plan.project, chips: plan.chips, shots: plan.shots.map(function (s) { return { id: s.id, name: s.name, tags: s.tags, takes: s.takes, ucs: s.ucs, notes: s.notes }; }) } : null,
     files: entries };
   files.push({ name: 'ballistic-session.json', data: utf8Bytes(JSON.stringify(manifest, null, 1)) });
   return B.zipFiles(files);
