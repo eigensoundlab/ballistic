@@ -314,3 +314,37 @@ test('a saved WAV carries its date, project and keywords where sound libraries a
   assert.ok(!/<rdf:li>Projects<\/rdf:li>/.test(xmp), 'group roots stay out of the flat keywords');
   assert.equal(B.xmpText(meta), xmp);
 });
+
+test('a plan survives its link, and a damaged link is refused', () => {
+  const plan = { id: 'plan-forest', name: 'Lesní procházka', project: 'Forest walk', chips: ['Nature', 'Objects'],
+    shots: [{ id: 's1', name: 'Blackbird', tags: ['Nature/Birds'], takes: 3, ucs: 'BIRDSong', notes: '' }, { id: 's2', name: 'Wind', tags: [], takes: 1, ucs: '', notes: 'from the ridge' }] };
+  const packed = B.packPlan(plan);
+  assert.match(packed, /^[A-Za-z0-9_-]+$/, 'safe in an address');
+  assert.deepEqual(B.unpackPlan(packed), plan);
+  assert.equal(B.unpackPlan('not-a-plan'), null);
+  assert.equal(B.unpackPlan(B.packPlan({ id: 'x', name: 'x', shots: [] }).slice(0, 10)), null);
+  /* takes are kept between 1 and 99, names are cut to 100 characters */
+  const odd = B.unpackPlan(Buffer.from(JSON.stringify({ v: 1, n: 'P', s: [{ n: 'x'.repeat(300), k: 500 }, { n: 'y', k: -3 }] })).toString('base64url'));
+  assert.equal(odd.shots[0].name.length, 100); assert.equal(odd.shots[0].takes, 99); assert.equal(odd.shots[1].takes, 1);
+});
+
+test('QR codes grow by version and carry the link', () => {
+  const short = B.qrCode('HELLO'), link = B.qrCode('https://eigensoundlab.github.io/ballistic/#plan=' + 'x'.repeat(400));
+  assert.equal(short.version, 1); assert.equal(short.size, 21); assert.equal(short.ecl, 'M');
+  assert.equal(link.size, link.version * 4 + 17);
+  /* the three finder patterns and the dark module */
+  for (const [x, y] of [[0, 0], [link.size - 7, 0], [0, link.size - 7]]) {
+    assert.ok(link.dark(x, y) && link.dark(x + 6, y + 6) && !link.dark(x + 1, y + 1) && link.dark(x + 3, y + 3));
+  }
+  assert.ok(link.dark(8, link.size - 8));
+  assert.equal(B.qrCode('x'.repeat(4000)), null);
+  assert.match(B.qrSvg('HELLO'), /^<svg[^>]+viewBox="0 0 29 29"/);
+});
+
+test('a take with its place carries it in iXML and XMP', () => {
+  const m = { title: 't', date: '2026-11-15T05:42:10+01:00', location: { lat: 50.0852, lon: -14.4279, alt: 235.4, acc: 12 } };
+  assert.match(B.ixmlText(m), /<LOCATION>\n  <LOCATION_GPS>50\.085200, -14\.427900<\/LOCATION_GPS>\n  <LOCATION_ALTITUDE>235<\/LOCATION_ALTITUDE>\n <\/LOCATION>/);
+  const x = B.xmpText(m);
+  assert.match(x, /exif:GPSLatitude="50,5\.1120N"/); assert.match(x, /exif:GPSLongitude="14,25\.6740W"/); assert.match(x, /exif:GPSAltitude="2354\/10"/);
+  assert.ok(!/LOCATION|GPS/.test(B.ixmlText({ title: 't' }) + B.xmpText({ title: 't' })), 'no place unless it was asked for');
+});

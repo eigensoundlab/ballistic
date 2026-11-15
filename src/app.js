@@ -272,7 +272,9 @@ var ctx = null, node = null, playing = false, playStart = 0, raf = 0, dl = null;
 var col = {}, cache = {};
 var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-function setStatus(t) { $('status').textContent = t; }
+function setStatus(t) { $('status').textContent = t; if (typeof rvStatus === 'function') rvStatus(t); }
+/* render reports stay on the page: the record view keeps its own last message */
+function renderStatus(t) { $('status').textContent = t; }
 function view() { return result ? (st.which === 'fx' ? result.fx : result.raw) : null; }
 function kind() { return st.p.kind || 'projectile'; }
 function presetKind(pr) { return pr.p.kind || 'projectile'; }
@@ -395,7 +397,7 @@ function unlock() {
 function rerender(mayPlay, always) {
   var msg = { id: ++jobId, p: st.p, a: st.a, seed: st.seed, play: !!(mayPlay && (always || $('audition').checked)) };
   if (msg.play) unlock();
-  lastMsg = msg; setStatus('Rendering');
+  lastMsg = msg; renderStatus('Rendering');
   clearTimeout(watchdog);
   if (worker) { worker.postMessage(msg); watchdog = setTimeout(function () { if (!fitWait && msg.id === jobId && (!result || result.id !== msg.id)) dropWorker(); }, 8000); }
   else runSync(msg);
@@ -406,7 +408,7 @@ function finish(res) {
   result = res; cache = {}; setTimeout(drawRef, 0);
   reanalyze(); readouts();
   var v = view();
-  setStatus((v.L.length / FS).toFixed(2) + ' s' + (v.loop ? ' seamless loop' : '') + ', rendered in ' + res.ms + ' ms, take ' + st.seed);
+  renderStatus((v.L.length / FS).toFixed(2) + ' s' + (v.loop ? ' seamless loop' : '') + ', rendered in ' + res.ms + ' ms, take ' + st.seed);
   if (res.play) play(); else { stop(); drawAll(null); }
 }
 
@@ -435,7 +437,7 @@ function tick() {
 }
 function setWhich(w, silent) {
   st.which = w; markChips();
-  if (!silent && result) { var v = view(); setStatus((v.L.length / FS).toFixed(2) + ' s, take ' + st.seed); if ($('audition').checked) play(); else { stop(); drawAll(null); } }
+  if (!silent && result) { var v = view(); renderStatus((v.L.length / FS).toFixed(2) + ' s, take ' + st.seed); if ($('audition').checked) play(); else { stop(); drawAll(null); } }
 }
 
 /* ---------- drawing ---------- */
@@ -962,7 +964,7 @@ function readouts() {
 /* ---------- your sounds: loaded or recorded, used wherever a sound is asked for ---------- */
 /* Every sound goes into one list. A slot (the recording, a body, a room, the hits, a knock, grains, a reference) is a
    menu of these plus the built-in examples, with Load and Record next to it. Sounds last until the page reloads. */
-var LIB = [], assetSeq = 0, SLOT_LABEL = { lib: 'sound', rcAsset: 'recording', rcIr: 'knock', irAsset: 'room', seqAsset: 'hits', dsKnock: 'knock', grAsset: 'grains', ref: 'reference' };
+var LIB = [], assetSeq = 0, SLOT_LABEL = { take: 'sound', lib: 'sound', rcAsset: 'recording', rcIr: 'knock', irAsset: 'room', seqAsset: 'hits', dsKnock: 'knock', grAsset: 'grains', ref: 'reference' };
 var SOUND_DEFAULT = { rcAsset: 'ex:engine', rcIr: 'ex:knock', irAsset: 'ex:stair', seqAsset: 'ex:door', dsKnock: 'ex:knock', grAsset: 'ex:gravel' };
 function fillSounds(sel, withNone) {
   var v = sel.value, g1 = el('optgroup'), g2 = el('optgroup');
@@ -988,13 +990,13 @@ function addSound(name, L, R, slot, meta) {
   LIB.push(s);
   if (worker) worker.postMessage({ asset: true, id: id, name: nm, L: a.L, R: a.R });
   keepSound(s);
-  refreshSoundSelects(); renderLibrary();
+  refreshSoundSelects(); renderLibrary(); renderRV();
   useSound(slot, id);
   return { id: id, name: nm, dur: s.dur, cut: L.length > a.L.length };
 }
 /* choosing a sound for a slot also switches on what uses it */
 function useSound(slot, id) {
-  if (slot === 'lib') return;
+  if (slot === 'lib' || slot === 'take') return;
   if (slot === 'ref') { st.r.ref = id; syncControls(); refChanged(); return; }
   var p = st.p;
   p[slot] = id;
@@ -1108,11 +1110,12 @@ function baseMeta(extra) {
 function fileMeta(s) {
   var m = s.meta || {}, rec = m.origin === 'recorded';
   return { title: s.name, note: m.notes, project: m.project, scene: s.name, take: m.take, tags: m.tags, source: 'Ballistic Foley Lab',
-    creator: m.recordist, date: m.date, reference: m.reference,
+    creator: m.recordist, date: m.date, reference: m.reference, location: m.location || null,
     origin: rec ? 'Recorded with Ballistic Foley Lab' + (m.device ? ', ' + m.device : '') : m.origin === 'file' ? 'Loaded into Ballistic Foley Lab from ' + m.file : 'Ballistic Foley Lab',
     user: [['Made', rec ? 'recorded' : m.origin === 'file' ? 'loaded from ' + m.file : m.origin], ['Input', m.device], ['Phone or computer', m.model], ['Browser', m.browser],
       ['Recorded at', m.rate ? m.rate + ' Hz, ' + plural(m.channels || 1, 'channel') + (m.rate !== FS ? ', resampled to ' + FS + ' Hz' : '') : ''],
-      ['Voice processing', m.processing], ['Time zone', m.tz], ['Parameters', m.params]] };
+      ['Voice processing', m.processing], ['Time zone', m.tz], ['Location accuracy', m.location ? Math.round(m.location.acc || 0) + ' m' : ''],
+      ['Plan', m.plan ? m.plan.name + (m.shot ? ', shot ' + m.shot.name : '') : ''], ['Parameters', m.params]] };
 }
 function safeName(s) { return String(s || 'sound').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 100) || 'sound'; }
 
@@ -1273,15 +1276,7 @@ function saveSound(s) {
 }
 function saveAllSounds() {
   if (!LIB.length) return;
-  var used = {}, list = [];
-  LIB.forEach(function (s) {
-    var n = safeName(s.name), k = 2;
-    while (used[n.toLowerCase()]) n = safeName(s.name) + ' ' + (k++);
-    used[n.toLowerCase()] = 1;
-    list.push({ name: n + '.wav', data: wavOf(s) }, { name: n + '.wav.xmp', data: utf8Bytes(B.xmpText(fileMeta(s))) });
-  });
-  var proj = SESSION.project.trim();
-  deliver(safeName('ballistic-sounds' + (proj ? '-' + proj : '')) + '.zip', B.zipFiles(list), 'application/zip', plural(LIB.length, 'sound') + ' with .xmp sidecars');
+  deliver(sessionZipName(SESSION.project.trim()), sessionZip(LIB, null), 'application/zip', plural(LIB.length, 'sound') + ' with .xmp sidecars and a list for Kurator');
 }
 function utf8Bytes(s) { return new TextEncoder().encode(s); }
 function sendSounds(list) {
@@ -1329,6 +1324,8 @@ function toggleRecord(slot) {
   /* the capture context is made inside the tap, so that mobile browsers let it run */
   try { c = new Ctx(); if (c.resume) c.resume(); } catch (e) { setStatus('Audio input could not start in this browser.'); return; }
   REC.state = 'opening'; REC.slot = slot; REC.ctx = c; recButtons();
+  AUTO_STOP.take = RV.auto;
+  REC.locP = wantLocation();
   setStatus('Asking for the microphone');
   navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 } } })
     .then(function (stream) {
@@ -1392,6 +1389,7 @@ function recMeter() {
   (function tick() {
     if (!REC.ctx || REC.state === 'off') return;
     REC.hold = Math.max(REC.level, REC.hold * 0.85); REC.level = 0;
+    rvMeter(REC.hold);
     var db = 20 * Math.log10(Math.max(REC.hold, 1e-5)), lv = 'input ' + (db < -90 ? 'silent' : db.toFixed(0) + ' dB');
     if (REC.state === 'armed') setStatus(REC.ctx.currentTime < REC.armUntil ? 'Hold still, measuring the quiet' : 'Listening: make the ' + SLOT_LABEL[REC.slot] + ' sound now. ' + lv);
     else if (REC.state === 'recording') setStatus('Recording ' + (REC.frames / REC.ctx.sampleRate).toFixed(1) + ' s, ' + lv + (REC.clipped ? ', too loud: it clipped' : '') + (AUTO_STOP[REC.slot] ? '. Stops after the ring dies away.' : '. Press Stop when done.'));
@@ -1399,7 +1397,7 @@ function recMeter() {
   })();
 }
 function closeRec() {
-  cancelAnimationFrame(REC.raf);
+  cancelAnimationFrame(REC.raf); rvMeter(0);
   if (REC.stream) REC.stream.getTracks().forEach(function (t) { t.stop(); });
   if (REC.ctx && REC.ctx.close) REC.ctx.close().catch(function () {});
   REC.state = 'off'; REC.ctx = null; REC.stream = null; REC.node = null; REC.src = null; REC.sink = null; REC.chunks = []; REC.pre = [];
@@ -1416,6 +1414,7 @@ function toEngineRate(chs, sr) {
 }
 function endRecording(fromQuiet) {
   var was = REC.state, sr = REC.ctx ? REC.ctx.sampleRate : FS, chunks = REC.chunks, frames = REC.frames, slot = REC.slot, clipped = REC.clipped, info = REC.info || { settings: {} }, t0 = REC.t0 || new Date();
+  var locP = REC.locP; REC.locP = null;
   closeRec();
   if (was !== 'recording' || !frames) { setStatus('Nothing was recorded: no sound rose above the quiet.'); return; }
   var n = fromQuiet ? Math.max(1, frames - Math.round((QUIET_STOP - 0.3) * sr)) : frames, nc = Math.min(2, chunks[0].length), chs = [], p = 0, k, i;
@@ -1428,13 +1427,352 @@ function endRecording(fromQuiet) {
   });
   var fo = Math.min(n >> 2, Math.round(0.005 * sr));
   chs.forEach(function (c) { for (i = 0; i < fo; i++) c[n - 1 - i] *= i / fo; });
-  toEngineRate(chs, sr).then(function (out) {
+  /* the place, if it was asked for: waited for at most 4 s more */
+  var place = locP ? Promise.race([locP, new Promise(function (res) { setTimeout(function () { res(null); }, 4000); })]) : Promise.resolve(null);
+  Promise.all([toEngineRate(chs, sr), place]).then(function (both) {
+    var out = both[0], loc = both[1], nt = slot === 'take' ? nextTake() : null;
     var name = SLOT_LABEL[slot] === 'reference' ? 'Reference' : SLOT_LABEL[slot] === 'knock' ? 'Knock' : SLOT_LABEL[slot] === 'room' ? 'Room' : (SESSION.project.trim() || 'Recording');
-    var take = ++REC.count, s = addSound(name + ' ' + take, out[0], out[1] || out[0].slice(), slot, baseMeta({
+    var take = ++REC.count, extra = {
       origin: 'recorded', date: isoLocal(t0), take: take, device: info.label || 'Microphone', rate: sr, channels: nc, processing: processingText(info.settings),
-      reference: 'BFL-' + isoLocal(t0).slice(0, 10).replace(/-/g, '') + '-' + take }));
-    setStatus('Recorded ' + s.name + ', ' + fTime(s.dur) + (clipped ? '. It clipped: move the phone back or make the sound softer, then record again.' : '.'));
+      reference: 'BFL-' + isoLocal(t0).slice(0, 10).replace(/-/g, '') + '-' + take, session: RV.session.id };
+    if (loc) extra.location = loc;
+    if (nt) {
+      extra.take = nt.take; extra.project = nt.project; extra.tags = uniq(nt.tags); extra.notes = $('rv-notes').value.trim();
+      if (nt.plan) extra.plan = { id: nt.plan.id, name: nt.plan.name };
+      if (nt.shot) extra.shot = { id: nt.shot.id, name: nt.shot.name };
+    }
+    var meta = baseMeta(extra);
+    if (nt) { meta.project = extra.project; meta.tags = extra.tags; meta.notes = extra.notes; }
+    var s = addSound(nt ? nt.name : name + ' ' + take, out[0], out[1] || out[0].slice(), slot, meta);
+    if (nt) {
+      $('rv-notes').value = '';
+      /* a shot with all its takes hands over to the next one still open */
+      var p = nt.plan;
+      if (p && nt.shot && takesOf(p.id, nt.shot.id) >= nt.shot.takes) {
+        var open = p.shots.filter(function (x) { return takesOf(p.id, x.id) < x.takes; })[0];
+        if (open) { RV.shot = open.id; saveRV(); }
+      }
+      renderRV();
+    }
+    setStatus('Recorded ' + s.name + ', ' + fTime(s.dur) + (loc ? ', with the location' : '') + (clipped ? '. It clipped: move the phone back or make the sound softer, then record again.' : '.'));
   }).catch(function () { setStatus('The recording could not be converted to 48 kHz in this browser.'); });
+}
+
+/* ---------- Record: a phone-first view for takes, with plans ----------
+   The Record button (top right) opens a view made for one hand: a plan's shots to tick off, quick tags to switch on,
+   one big button, the takes of this session, and Save session. A plan comes from the Plans panel here, from a plan
+   file, or from Kurator or another browser as a link or QR code (#plan=..., read here and never sent to a server).
+   Takes are ordinary sounds (Your sounds) with the plan, shot, session and, when asked for, the place in their meta. */
+var PLANS = [], RV = { plan: '', shot: '', chips: [], session: null, auto: false, loc: false }, DEFAULT_CHIPS = ['Nature', 'Objects', 'Ambience', 'Foley'];
+function loadRV() {
+  try {
+    var p = JSON.parse(localStorage.getItem('bfx-plans') || '[]');
+    if (Array.isArray(p)) PLANS = p.map(function (x) { return B.unpackPlan(B.packPlan(x)); }).filter(Boolean);
+    var r = JSON.parse(localStorage.getItem('bfx-rv') || '{}');
+    ['plan', 'shot'].forEach(function (k) { if (typeof r[k] === 'string') RV[k] = r[k]; });
+    if (Array.isArray(r.chips)) RV.chips = r.chips.filter(function (c) { return typeof c === 'string'; });
+    if (r.session && typeof r.session.id === 'string') RV.session = r.session;
+    RV.auto = !!r.auto; RV.loc = !!r.loc;
+  } catch (e) { /* storage may be off: plans last for this visit */ }
+  if (!RV.session) newSession();
+}
+function saveRV() {
+  try {
+    localStorage.setItem('bfx-plans', JSON.stringify(PLANS));
+    localStorage.setItem('bfx-rv', JSON.stringify({ plan: RV.plan, shot: RV.shot, chips: RV.chips, session: RV.session, auto: RV.auto, loc: RV.loc }));
+  } catch (e) { /* storage may be off */ }
+}
+function newSession() { var d = new Date(); RV.session = { id: 'ses-' + d.getTime().toString(36), started: isoLocal(d) }; }
+function curPlan() { return PLANS.filter(function (p) { return p.id === RV.plan; })[0] || null; }
+function curShot() { var p = curPlan(); return p ? p.shots.filter(function (s) { return s.id === RV.shot; })[0] || null : null; }
+function takesOf(planId, shotId) { return LIB.filter(function (s) { var m = s.meta || {}; return m.plan && m.plan.id === planId && m.shot && m.shot.id === shotId; }).length; }
+function sessionTakes() { return LIB.filter(function (s) { return (s.meta || {}).session === RV.session.id; }); }
+function rvOpen() { return !$('recview').hidden; }
+function chipSet() {
+  var p = curPlan(), list = (p && p.chips.length ? p.chips : DEFAULT_CHIPS).slice();
+  RV.chips.forEach(function (c) { if (list.indexOf(c) < 0) list.push(c); });
+  return list;
+}
+/* what the next take will be called and carry */
+function nextTake() {
+  var p = curPlan(), sh = curShot(), n;
+  if (sh) {
+    n = takesOf(p.id, sh.id) + 1;
+    return { name: (sh.ucs ? sh.ucs + '_' : '') + sh.name + ' ' + n, take: n, project: p.project || p.name, tags: tagList(SESSION.tags).concat(sh.tags, RV.chips), plan: p, shot: sh };
+  }
+  n = sessionTakes().length + 1;
+  var proj = p ? p.project || p.name : SESSION.project.trim();
+  return { name: (proj || 'Take') + ' ' + n, take: n, project: proj, tags: tagList(SESSION.tags).concat(RV.chips), plan: p, shot: null };
+}
+function uniq(list) { return list.filter(function (v, i) { return v && list.indexOf(v) === i; }); }
+function renderRV() {
+  if (!rvOpen()) return;
+  var sel = $('rv-plan-sel'), p = curPlan(), list = $('rv-shots');
+  sel.textContent = '';
+  var o0 = el('option', null, 'No plan: free takes'); o0.value = ''; sel.appendChild(o0);
+  PLANS.forEach(function (x) { var o = el('option', null, x.name + ' (' + plural(x.shots.length, 'shot') + ')'); o.value = x.id; sel.appendChild(o); });
+  sel.value = p ? p.id : '';
+  list.textContent = ''; list.hidden = !p;
+  if (p) p.shots.forEach(function (s) {
+    var n = takesOf(p.id, s.id), li = el('li'), b = el('button', 'rv-shot' + (n >= s.takes ? ' done' : ''));
+    b.type = 'button'; b.setAttribute('aria-pressed', String(s.id === RV.shot));
+    b.appendChild(el('span', null, s.name + (s.tags.length ? ' · ' + s.tags.join(', ') : '')));
+    b.appendChild(el('span', 'rv-prog', n + ' of ' + s.takes));
+    b.addEventListener('click', function () { RV.shot = RV.shot === s.id ? '' : s.id; saveRV(); renderRV(); });
+    li.appendChild(b); list.appendChild(li);
+  });
+  var nt = nextTake();
+  $('rv-take').textContent = 'Next: ' + nt.name;
+  $('rv-tags').textContent = [nt.project ? 'Project: ' + nt.project : '', uniq(nt.tags).join(', '), RV.loc ? 'with the location' : ''].filter(Boolean).join(' · ') || 'No project or tags yet: choose a plan, or set them under Your sounds.';
+  var chips = $('rv-chips');
+  chips.textContent = '';
+  chipSet().forEach(function (c) {
+    var b = el('button', 'chip', c); b.type = 'button'; b.setAttribute('aria-pressed', String(RV.chips.indexOf(c) >= 0));
+    b.addEventListener('click', function () { var i = RV.chips.indexOf(c); if (i >= 0) RV.chips.splice(i, 1); else RV.chips.push(c); saveRV(); renderRV(); });
+    chips.appendChild(b);
+  });
+  var add = el('button', 'chip', '+ Tag'); add.type = 'button'; add.title = 'A quick tag of your own';
+  add.addEventListener('click', function () { var t = (window.prompt('Quick tag (use / for levels, e.g. Nature/Water):') || '').trim(); if (t && RV.chips.indexOf(t) < 0) { RV.chips.push(t); saveRV(); renderRV(); } });
+  chips.appendChild(add);
+  $('rv-auto').checked = RV.auto; $('rv-loc').checked = RV.loc;
+  var takes = sessionTakes().slice().reverse(), tl = $('rv-takes');
+  tl.textContent = '';
+  if (!takes.length) tl.appendChild(el('li', 'note', 'No takes in this session yet.'));
+  takes.forEach(function (s) {
+    var li = el('li', 'snd'), head = el('div', 'snd-head'), tools = el('div', 'toolrow');
+    head.appendChild(el('span', 'snd-name', s.name)); head.appendChild(el('span', 'snd-dur', fTime(s.dur)));
+    li.appendChild(head);
+    var tl2 = tagLine(s); if (tl2) li.appendChild(el('p', 'snd-tags', tl2));
+    if (s.meta && s.meta.location) li.appendChild(el('p', 'snd-info', 'At ' + s.meta.location.lat.toFixed(5) + ', ' + s.meta.location.lon.toFixed(5) + ' (within ' + Math.round(s.meta.location.acc || 0) + ' m)'));
+    tools.appendChild(toolButton('', 'Play', 'Play this take', function () { audition(s.id); }));
+    var rm = toolButton('', 'Remove', 'Take it out of this browser', function () {
+      if (rm.dataset.sure) { removeSound(s.id); renderRV(); return; }
+      rm.dataset.sure = '1'; rm.textContent = 'Remove for good'; rm.classList.add('live');
+      setTimeout(function () { if (rm.isConnected) { delete rm.dataset.sure; rm.textContent = 'Remove'; rm.classList.remove('live'); } }, 4000);
+    });
+    tools.appendChild(rm);
+    li.appendChild(tools); tl.appendChild(li);
+  });
+  $('rv-save').disabled = !takes.length;
+  $('rv-share').hidden = !(takes.length && canShareFiles());
+  recButtons();
+}
+function canShareFiles() {
+  try { return !!(navigator.canShare && navigator.canShare({ files: [new File([new Uint8Array(4)], 'x.zip', { type: 'application/zip' })] })); } catch (e) { return false; }
+}
+var rvLastFocus = null;
+function openRV(focusPlans) {
+  rvLastFocus = document.activeElement;
+  $('recview').hidden = false; document.body.style.overflow = 'hidden';
+  stop(); drawAll(null);
+  showPE(!!focusPlans);
+  renderRV();
+  if (!recBusy()) rvStatus('Tap Record, then make the sound: the take starts with it.');
+}
+function closeRV() {
+  if (recBusy()) endRecording(false);
+  $('recview').hidden = true; document.body.style.overflow = '';
+  if (rvLastFocus && rvLastFocus.focus) rvLastFocus.focus();
+}
+/* the status line of the page, mirrored in the record view while it is open */
+function rvStatus(t) { var s = $('rv-status'); if (s && rvOpen()) s.textContent = t; }
+function rvMeter(lin) {
+  var m = $('rv-meter'); if (!m || !rvOpen()) return;
+  var db = 20 * Math.log10(Math.max(lin, 1e-5)), u = Math.max(0, Math.min(1, (db + 60) / 60));
+  m.style.transform = 'scaleX(' + u + ')'; m.classList.toggle('hot', lin > 0.89);
+}
+/* where the take was made: asked for at the start of each recording when the recordist turned it on */
+function wantLocation() {
+  if (!RV.loc || !navigator.geolocation) return null;
+  return new Promise(function (res) {
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      var c = pos.coords;
+      res({ lat: c.latitude, lon: c.longitude, acc: c.accuracy, alt: c.altitude == null ? null : c.altitude });
+    }, function () { res(null); }, { enableHighAccuracy: true, maximumAge: 60000, timeout: 10000 });
+  });
+}
+
+/* ---------- session zips: what Kurator unpacks ---------- */
+/* WAVs, a .xmp sidecar each, and ballistic-session.json: the plan and, per file, the facts Kurator files it by */
+function sessionZip(list, plan) {
+  var used = {}, files = [], entries = [];
+  list.forEach(function (s) {
+    var n = safeName(s.name), k = 2;
+    while (used[n.toLowerCase()]) n = safeName(s.name) + ' ' + (k++);
+    used[n.toLowerCase()] = 1;
+    var m = s.meta || {}, fm = fileMeta(s);
+    files.push({ name: n + '.wav', data: wavOf(s) }, { name: n + '.wav.xmp', data: utf8Bytes(B.xmpText(fm)) });
+    entries.push({ file: n + '.wav', sidecar: n + '.wav.xmp', title: s.name, date: m.date || '', project: m.project || '', tags: m.tags || [], notes: m.notes || '',
+      origin: m.origin || '', device: m.device || '', take: m.take || null, plan: m.plan ? m.plan.id : '', shot: m.shot ? m.shot.id : '', session: m.session || '',
+      location: m.location || null, keywords: B.keywordPaths(fm) });
+  });
+  var manifest = { format: 'ballistic-session', version: 1, app: 'Ballistic Foley Lab', saved: isoLocal(new Date()), session: RV.session ? RV.session.id : '',
+    plan: plan ? { id: plan.id, name: plan.name, project: plan.project, shots: plan.shots.map(function (s) { return { id: s.id, name: s.name, tags: s.tags, takes: s.takes, ucs: s.ucs }; }) } : null,
+    files: entries };
+  files.push({ name: 'ballistic-session.json', data: utf8Bytes(JSON.stringify(manifest, null, 1)) });
+  return B.zipFiles(files);
+}
+function sessionZipName(project) {
+  var d = isoLocal(new Date());
+  return safeName((project || 'Ballistic') + ' ' + d.slice(0, 10) + ' ' + d.slice(11, 16).replace(':', '')) + '.zip';
+}
+function saveSession(share) {
+  var takes = sessionTakes(); if (!takes.length) return;
+  var p = curPlan(), name = sessionZipName(p ? p.project || p.name : SESSION.project.trim()), zip = sessionZip(takes, p);
+  if (share) {
+    var f = new File([zip], name, { type: 'application/zip' });
+    navigator.share({ files: [f], title: name }).then(function () { setStatus('Shared ' + name + '.'); }).catch(function (e) { if (!e || e.name !== 'AbortError') setStatus('Sharing did not work here. Use Save session.'); });
+    return;
+  }
+  deliver(name, zip, 'application/zip', plural(takes.length, 'take') + ' with .xmp sidecars and a list for Kurator');
+}
+
+/* ---------- plans: make, share by link or QR, keep ---------- */
+var PE = { id: '' };
+function showPE(on) {
+  $('rv-main').hidden = on; $('pe').hidden = !on;
+  if (on) { if (!PE.id && curPlan()) PE.id = RV.plan; renderPE(); $('pe-title').focus(); } else $('rv-title').focus();
+}
+function pePlan() { return PLANS.filter(function (p) { return p.id === PE.id; })[0] || null; }
+function planBase() {
+  return /^https?:$/.test(location.protocol) && !inViewer ? location.origin + location.pathname : 'https://eigensoundlab.github.io/ballistic/';
+}
+function planLink(p) { return planBase() + '#plan=' + B.packPlan(p); }
+function renderPE() {
+  var sel = $('pe-sel'), p = pePlan();
+  sel.textContent = '';
+  if (!PLANS.length) { var o0 = el('option', null, 'No plans yet'); o0.value = ''; sel.appendChild(o0); }
+  PLANS.forEach(function (x) { var o = el('option', null, x.name); o.value = x.id; sel.appendChild(o); });
+  sel.value = p ? p.id : '';
+  $('pe-form').hidden = !p;
+  if (!p) return;
+  $('pe-name').value = p.name; $('pe-project').value = p.project; $('pe-chips').value = p.chips.join(', ');
+  var ol = $('pe-shots');
+  ol.textContent = '';
+  p.shots.forEach(function (s, i) {
+    var li = el('li', 'pe-shot'), k = 'pe-s' + i;
+    [['name', 'Shot', s.name, ''], ['tags', 'Tags', s.tags.join(', '), 'commas; / for levels'], ['takes', 'Takes', String(s.takes), ''], ['ucs', 'UCS', s.ucs, 'optional, e.g. DOORWood']].forEach(function (f) {
+      var r = textRow(k + '-' + f[0], f[1], f[3], ''), inp = r.querySelector('input');
+      inp.value = f[2];
+      if (f[0] === 'takes') { inp.inputMode = 'numeric'; }
+      inp.addEventListener('change', function () {
+        if (f[0] === 'name') s.name = inp.value.trim() || s.name;
+        else if (f[0] === 'tags') s.tags = tagList(inp.value);
+        else if (f[0] === 'takes') s.takes = Math.max(1, Math.min(99, Math.round(+inp.value) || 1));
+        else s.ucs = inp.value.trim().replace(/[^A-Za-z]/g, '').slice(0, 20);
+        planChanged();
+      });
+      li.appendChild(r);
+    });
+    var tools = el('div', 'toolrow');
+    tools.appendChild(toolButton('', 'Remove shot', 'Take this shot out of the plan', function () { p.shots.splice(i, 1); planChanged(true); }));
+    li.appendChild(tools);
+    ol.appendChild(li);
+  });
+  drawPlanQR();
+}
+function drawPlanQR() {
+  var p = pePlan(), box = $('pe-qr');
+  if (!p) { box.textContent = ''; return; }
+  var link = planLink(p), svg = B.qrSvg(link, '#000');
+  box.innerHTML = svg || '';
+  if (!svg) box.textContent = 'This plan is too long for a QR code. Copy the link or save the plan file.';
+  $('pe-copy').dataset.link = link;
+}
+function planChanged(rerenderAll) { saveRV(); if (rerenderAll) renderPE(); else drawPlanQR(); }
+function addPlan(p, select) {
+  var i = PLANS.findIndex(function (x) { return x.id === p.id; });
+  if (i >= 0) PLANS[i] = p; else PLANS.push(p);
+  if (select) { RV.plan = p.id; RV.shot = p.shots.length ? p.shots[0].id : ''; }
+  PE.id = p.id; saveRV();
+}
+function wirePlans() {
+  $('pe-back').addEventListener('click', function () { showPE(false); renderRV(); });
+  $('pe-sel').addEventListener('change', function () { PE.id = $('pe-sel').value; renderPE(); });
+  $('pe-new').addEventListener('click', function () {
+    var n = PLANS.length + 1, proj = SESSION.project.trim();
+    addPlan({ id: 'plan-' + Date.now().toString(36), name: proj || 'Plan ' + n, project: proj, chips: DEFAULT_CHIPS.slice(), shots: [{ id: 's1', name: 'First shot', tags: [], takes: 3, ucs: '', notes: '' }] }, false);
+    renderPE(); $('pe-name').focus();
+  });
+  [['pe-name', 'name'], ['pe-project', 'project'], ['pe-chips', 'chips']].forEach(function (f) {
+    $(f[0]).addEventListener('change', function () {
+      var p = pePlan(); if (!p) return;
+      var v = $(f[0]).value.trim();
+      if (f[1] === 'chips') p.chips = tagList(v); else if (f[1] === 'name') p.name = v || p.name; else p.project = v;
+      planChanged(f[1] === 'name');
+    });
+  });
+  $('pe-add').addEventListener('click', function () {
+    var p = pePlan(); if (!p) return;
+    var k = 1; while (p.shots.some(function (s) { return s.id === 's' + k; })) k++;
+    p.shots.push({ id: 's' + k, name: 'Shot ' + (p.shots.length + 1), tags: [], takes: 3, ucs: '', notes: '' });
+    planChanged(true);
+    var last = $('pe-s' + (p.shots.length - 1) + '-name'); if (last) { last.focus(); last.select(); }
+  });
+  $('pe-copy').addEventListener('click', function () {
+    var link = $('pe-copy').dataset.link; if (!link) return;
+    var done = function () { setStatus('Copied the plan link.'); }, fail = function () { window.prompt('Copy the plan link:', link); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(done, fail); else fail();
+  });
+  $('pe-savefile').addEventListener('click', function () {
+    var p = pePlan(); if (!p) return;
+    var o = JSON.parse(JSON.stringify(p)); o.format = 'ballistic-plan'; o.version = 1;
+    deliver(safeName(p.name) + '.plan.json', utf8Bytes(JSON.stringify(o, null, 1)), 'application/json', 'plan file');
+  });
+  $('pe-loadfile').addEventListener('click', function () { $('pe-file').click(); });
+  $('pe-file').addEventListener('change', function () {
+    var f = $('pe-file').files && $('pe-file').files[0]; $('pe-file').value = '';
+    if (!f) return;
+    f.text().then(function (t) {
+      var o = JSON.parse(t), p = o && B.unpackPlan(B.packPlan({ id: o.id, name: o.name, project: o.project || '', chips: o.chips || [], shots: (o.shots || []).map(function (s) { return { id: s.id, name: s.name, tags: s.tags || [], takes: s.takes || 1, ucs: s.ucs || '', notes: s.notes || '' }; }) }));
+      if (!p) throw new Error('not a plan');
+      addPlan(p, false); renderPE(); setStatus('Loaded the plan ' + p.name + '.');
+    }).catch(function () { setStatus('That file is not a plan. Plans are .plan.json files saved here or in Kurator.'); });
+  });
+  $('pe-del').addEventListener('click', function () {
+    var b = $('pe-del'), p = pePlan(); if (!p) return;
+    if (!b.dataset.sure) { b.dataset.sure = '1'; b.textContent = 'Delete for good'; b.classList.add('live'); setTimeout(function () { delete b.dataset.sure; b.textContent = 'Delete plan'; b.classList.remove('live'); }, 4000); return; }
+    PLANS = PLANS.filter(function (x) { return x.id !== p.id; });
+    if (RV.plan === p.id) { RV.plan = ''; RV.shot = ''; }
+    PE.id = PLANS.length ? PLANS[0].id : ''; saveRV(); renderPE();
+    delete b.dataset.sure; b.textContent = 'Delete plan'; b.classList.remove('live');
+  });
+}
+function wireRV() {
+  $('rv-open').addEventListener('click', function () { openRV(false); });
+  $('rv-close').addEventListener('click', closeRV);
+  $('recview').addEventListener('keydown', function (e) { if (e.key === 'Escape') { if (!$('pe').hidden) showPE(false); else closeRV(); } });
+  $('rv-plans').addEventListener('click', function () { PE.id = RV.plan || (PLANS[0] && PLANS[0].id) || ''; showPE(true); });
+  $('rv-plan-sel').addEventListener('change', function () {
+    RV.plan = $('rv-plan-sel').value; var p = curPlan();
+    RV.shot = p && p.shots.length ? p.shots[0].id : ''; saveRV(); renderRV();
+  });
+  $('rec-take').addEventListener('click', function () { toggleRecord('take'); });
+  $('rv-auto').addEventListener('change', function () { RV.auto = $('rv-auto').checked; saveRV(); });
+  $('rv-loc').addEventListener('change', function () {
+    RV.loc = $('rv-loc').checked; saveRV();
+    if (RV.loc) {
+      if (!navigator.geolocation) { RV.loc = false; $('rv-loc').checked = false; saveRV(); setStatus('This browser cannot tell the location.'); return; }
+      /* ask now, so that the permission prompt does not come in the middle of a take */
+      wantLocation().then(function (l) { setStatus(l ? 'The location goes with new recordings (within ' + Math.round(l.acc) + ' m). It is only stored in the files.' : 'The location could not be read. Allow it for this site, then switch it on again.'); if (!l) { RV.loc = false; $('rv-loc').checked = false; saveRV(); } renderRV(); });
+    }
+    renderRV();
+  });
+  $('rv-save').addEventListener('click', function () { saveSession(false); });
+  $('rv-share').addEventListener('click', function () { saveSession(true); });
+  $('rv-new').addEventListener('click', function () { newSession(); saveRV(); renderRV(); setStatus('A new session: Save session now gathers only the takes from here on.'); });
+  wirePlans();
+}
+/* a plan link (#plan=...) opens Record with the plan; the address bar keeps no trace of it */
+function planFromLink() {
+  var m = /[#&]plan=([A-Za-z0-9_-]+)/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  var p = B.unpackPlan(m[1]);
+  if (!p) { setStatus('The plan link is damaged. Ask for it again, or load the plan file.'); return; }
+  addPlan(p, true);
+  openRV(false);
+  setStatus('Plan ' + p.name + ' is here: ' + plural(p.shots.length, 'shot') + '. Tap a shot, then Record.');
 }
 
 /* ---------- the reference: compare, then fit one setting ---------- */
@@ -1669,7 +2007,7 @@ function start(saved) {
     st.p = B.merge(B.DEFAULTS, saved.p); st.a = B.merge(B.ACTION_DEFAULTS, saved.a);
     st.sp = saved.sp || ''; st.ap = saved.ap || ''; st.which = saved.which === 'raw' ? 'raw' : 'fx'; st.seed = saved.seed || st.seed;
   }
-  loadSession(); deviceInfo();
+  loadSession(); deviceInfo(); loadRV();
   var restore = restoreSounds();
   refreshColors(); buildControls();
   syncControls(); startWorker();
@@ -1696,11 +2034,14 @@ function start(saved) {
   if (window.MutationObserver) new MutationObserver(themeChange).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (!playing) drawAll(null); });
   /* the sounds kept in this browser come back; a slot whose sound is gone falls back to its example */
+  wireRV();
   restore.then(function () {
     SOUND_KEYS.forEach(function (k) { if (!B.getAsset(st.p[k])) st.p[k] = SOUND_DEFAULT[k]; });
-    refreshSoundSelects(); renderLibrary(); syncControls();
+    refreshSoundSelects(); renderLibrary(); syncControls(); renderRV();
     if (LIB.length) rerender(false);
+    planFromLink();
   });
+  window.addEventListener('hashchange', planFromLink);
   var hot = window.claude && window.claude.hot;
   if (hot && hot.snapshot) hot.snapshot(function () { return { p: st.p, a: st.a, sp: st.sp, ap: st.ap, which: st.which, seed: st.seed }; });
 }

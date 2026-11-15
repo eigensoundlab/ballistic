@@ -40,6 +40,51 @@ body { background: var(--bg); color: var(--ink); font: 400 15px/1.45 var(--font-
 .wrap { max-width: 1120px; margin: 0 auto; padding: 20px 16px 96px; display: flex; flex-direction: column; gap: 16px; }
 
 .mast { display: flex; flex-direction: column; gap: 4px; }
+.mast-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.recopen { flex: none; font: 900 18px/1 var(--font-display); letter-spacing: 0.1em; text-transform: uppercase; color: #fff; background: var(--tracer); border: 0; border-radius: 999px; padding: 12px 18px 12px 34px; cursor: pointer; position: relative; margin-top: 4px; }
+.recopen::before { content: ""; position: absolute; left: 14px; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%; background: currentColor; }
+:root[data-theme="dark"] .recopen { color: #160703; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .recopen { color: #160703; } }
+
+.recview { position: fixed; inset: 0; z-index: 20; background: var(--bg); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.rv-in { max-width: 560px; margin: 0 auto; padding: 14px 16px 40px; display: flex; flex-direction: column; gap: 12px; }
+.rv-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.rv-top h2:focus { outline: none; }
+.rv-top h2 { margin: 0; font: 900 30px/1 var(--font-display); letter-spacing: 0.04em; text-transform: uppercase; }
+.rv-h { margin: 6px 0 0; font: 700 15px/1.2 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.rv-plan { display: flex; align-items: center; gap: 8px; }
+.rv-plan label { font-weight: 600; font-size: 14px; }
+.rv-plan select { flex: 1 1 auto; min-width: 0; font: 500 16px/1.2 var(--font-body); color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 8px; }
+.rv-shots, .rv-takes, .pe-shots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rv-shot { width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font: 500 15px/1.3 var(--font-body); color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; cursor: pointer; }
+.rv-shot[aria-pressed="true"] { border-color: var(--tracer); box-shadow: inset 4px 0 0 var(--tracer); }
+.rv-shot .rv-prog { font: 500 12px/1 var(--font-mono); color: var(--muted); white-space: nowrap; }
+.rv-shot.done .rv-prog { color: var(--shock); }
+.rv-next { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+.rv-take { margin: 0; font: 700 20px/1.2 var(--font-display); letter-spacing: 0.02em; overflow-wrap: anywhere; }
+.rv-tags { margin: 4px 0 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.rv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.rv-rec { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0; }
+.rv-go { width: 112px; height: 112px; border-radius: 50%; border: 6px solid var(--panel); outline: 2px solid var(--tracer); background: var(--tracer); color: #fff; font: 900 18px/1 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; }
+.rv-go.live { border-radius: 24px; animation: rvpulse 1.2s ease-in-out infinite; }
+:root[data-theme="dark"] .rv-go { color: #160703; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .rv-go { color: #160703; } }
+@keyframes rvpulse { 50% { outline-offset: 6px; } }
+@media (prefers-reduced-motion: reduce) { .rv-go.live { animation: none; } }
+.rv-meter { width: 100%; height: 10px; background: var(--well); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.rv-meter span { display: block; height: 100%; width: 100%; background: var(--shock); transform-origin: left; transform: scaleX(0); }
+.rv-meter span.hot { background: var(--tracer); }
+.rv-status { margin: 0; min-height: 2.6em; text-align: center; font: 400 13px/1.3 var(--font-mono); color: var(--muted); }
+.rv-opts { display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.rv-opts label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+.rv-opts input { accent-color: var(--tracer); width: 18px; height: 18px; margin: 0; }
+.rv-takes .snd { background: var(--panel); }
+.pe-form { display: flex; flex-direction: column; gap: 12px; }
+.pe-shot { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pe-shot .row:first-child { grid-column: 1 / -1; }
+.pe-shot .toolrow { grid-column: 1 / -1; }
+.pe-qr { align-self: center; width: min(100%, 320px); }
+.pe-qr svg { display: block; width: 100%; height: auto; border-radius: 4px; }
 .mast h1 { margin: 0; font: 900 clamp(34px, 9vw, 56px)/0.92 var(--font-display); letter-spacing: 0.01em; text-transform: uppercase; text-wrap: balance; }
 .mast h1 svg { display: inline-block; width: 0.9em; height: 0.66em; margin-left: 0.12em; vertical-align: baseline; }
 .mast p { margin: 0; max-width: 62ch; color: var(--muted); }
@@ -138,9 +183,12 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 <body>
 <main class="wrap">
   <header class="mast">
-    <h1>Ballistic Foley Lab
-      <svg viewBox="0 0 38 28" aria-hidden="true"><path d="M1 14h7V3l22 22V14h7" fill="none" stroke="var(--tracer)" stroke-width="3" stroke-linejoin="miter"/></svg>
-    </h1>
+    <div class="mast-top">
+      <h1>Ballistic Foley Lab
+        <svg viewBox="0 0 38 28" aria-hidden="true"><path d="M1 14h7V3l22 22V14h7" fill="none" stroke="var(--tracer)" stroke-width="3" stroke-linejoin="miter"/></svg>
+      </h1>
+      <button type="button" class="recopen" id="rv-open" aria-haspopup="dialog" title="Record takes, with plans, tags and the date and place they were made">Record</button>
+    </div>
     <p>Sound computed from physics: projectiles, blasts, collapsing cavities, breaking structures, engines, rotors, electric arcs, energy weapons from launcher to target, forcefields, and your own recordings placed in the scene. The action filters then push the result toward a film mix.</p>
   </header>
 
@@ -206,6 +254,73 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
     </div>
   </div>
 </div>
+
+<section class="recview" id="recview" hidden role="dialog" aria-modal="true" aria-labelledby="rv-title">
+  <div class="rv-in" id="rv-main">
+    <div class="rv-top">
+      <h2 id="rv-title" tabindex="-1">Record</h2>
+      <button type="button" class="btn small" id="rv-close">Close</button>
+    </div>
+    <div class="rv-plan">
+      <label for="rv-plan-sel">Plan</label>
+      <select id="rv-plan-sel"></select>
+      <button type="button" class="btn small" id="rv-plans">Plans</button>
+    </div>
+    <ul class="rv-shots" id="rv-shots" aria-label="Shots in the plan"></ul>
+    <div class="rv-next">
+      <p class="rv-take" id="rv-take"></p>
+      <p class="rv-tags" id="rv-tags"></p>
+    </div>
+    <div class="rv-chips" id="rv-chips" role="group" aria-label="Tags for the next take"></div>
+    <div class="rv-rec">
+      <button type="button" class="rv-go" id="rec-take">Record</button>
+      <div class="rv-meter" aria-hidden="true"><span id="rv-meter"></span></div>
+      <p class="rv-status" id="rv-status" role="status" aria-live="polite"></p>
+    </div>
+    <div class="row"><label for="rv-notes"><span class="nm">Notes<span class="hint">for the next take</span></span></label><input type="text" id="rv-notes" autocomplete="off"></div>
+    <div class="rv-opts">
+      <label for="rv-auto"><input type="checkbox" id="rv-auto"> Stop by itself after 1.5 s of quiet</label>
+      <label for="rv-loc"><input type="checkbox" id="rv-loc"> Add the location to new recordings</label>
+    </div>
+    <h3 class="rv-h">This session</h3>
+    <ul class="rv-takes" id="rv-takes"></ul>
+    <div class="toolrow">
+      <button type="button" class="btn" id="rv-save">Save session</button>
+      <button type="button" class="btn" id="rv-share" hidden>Share</button>
+      <button type="button" class="btn" id="rv-new">New session</button>
+    </div>
+    <p class="note">Save session writes one zip: the takes as WAV with their date, tags and notes, a .xmp sidecar each, and a list for Kurator. Put it in a folder your computer syncs (Syncthing, iCloud Drive, Google Drive, OneDrive) that is in Kurator's library: Kurator unpacks it, tags the sounds and counts the takes against the plan.</p>
+  </div>
+  <div class="rv-in" id="pe" hidden>
+    <div class="rv-top">
+      <h2 id="pe-title" tabindex="-1">Plans</h2>
+      <button type="button" class="btn small" id="pe-back">Back</button>
+    </div>
+    <div class="rv-plan">
+      <label for="pe-sel">Plan</label>
+      <select id="pe-sel"></select>
+      <button type="button" class="btn small" id="pe-new">New plan</button>
+    </div>
+    <div id="pe-form" class="pe-form">
+      <div class="row"><label for="pe-name"><span class="nm">Name</span></label><input type="text" id="pe-name" autocomplete="off"></div>
+      <div class="row"><label for="pe-project"><span class="nm">Project<span class="hint">goes with every take</span></span></label><input type="text" id="pe-project" autocomplete="off"></div>
+      <div class="row"><label for="pe-chips"><span class="nm">Quick tags<span class="hint">commas; to switch on while recording</span></span></label><input type="text" id="pe-chips" autocomplete="off"></div>
+      <h3 class="rv-h">Shots</h3>
+      <ol class="pe-shots" id="pe-shots"></ol>
+      <div class="toolrow"><button type="button" class="btn small" id="pe-add">Add a shot</button></div>
+      <h3 class="rv-h">On a phone</h3>
+      <p class="note">Scan the code with the phone's camera, or send it the link: the plan opens in Record, with nothing sent to any server.</p>
+      <div class="pe-qr" id="pe-qr" role="img" aria-label="QR code of the plan link"></div>
+      <div class="toolrow">
+        <button type="button" class="btn small" id="pe-copy">Copy link</button>
+        <button type="button" class="btn small" id="pe-savefile">Save plan file</button>
+        <button type="button" class="btn small" id="pe-loadfile">Load a plan file</button>
+        <button type="button" class="btn small" id="pe-del">Delete plan</button>
+        <input type="file" id="pe-file" accept=".json,application/json" hidden>
+      </div>
+    </div>
+  </div>
+</section>
 
 <script src="src/engine.js"></script>
 <script src="src/app.js"></script>
