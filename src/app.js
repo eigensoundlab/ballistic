@@ -1268,7 +1268,12 @@ function audition(id) {
     node = ctx.createBufferSource(); node.buffer = ab; node.connect(ctx.destination); node.start();
   } catch (e) { setStatus('Audio could not start here.'); }
 }
-function wavOf(s, float) { var a = B.getAsset(s.id); return float ? B.encodeWavFloat(a.L, a.R, fileMeta(s)) : B.encodeWav(a.L, a.R, fileMeta(s)); }
+/* one channel when the sound has one: a mono microphone, or a file whose two channels are the same */
+function sameChannels(a) { if (a.R === a.L) return true; for (var i = 0; i < a.L.length; i++) if (a.L[i] !== a.R[i]) return false; return true; }
+function wavOf(s, float) {
+  var a = B.getAsset(s.id), R = (s.meta && s.meta.channels === 1) || sameChannels(a) ? null : a.R;
+  return float ? B.encodeWavFloat(a.L, R, fileMeta(s)) : B.encodeWav(a.L, R, fileMeta(s));
+}
 function saveSound(s) {
   var name = safeName(s.name);
   if (inViewer) { deliver(name + '.zip', B.zipFiles([{ name: name + '.wav', data: wavOf(s) }, { name: name + '.wav.xmp', data: utf8Bytes(B.xmpText(fileMeta(s))) }]), 'application/zip', 'WAV and .xmp sidecar'); return; }
@@ -1279,10 +1284,10 @@ function saveAllSounds() {
   deliver(sessionZipName(SESSION.project.trim()), sessionZip(LIB, null), 'application/zip', plural(LIB.length, 'sound') + ' with .xmp sidecars and a list for Kurator');
 }
 function utf8Bytes(s) { return new TextEncoder().encode(s); }
-function sendSounds(list) {
+function sendSounds(list, group) {
   if (!list.length || !WB.url) return;
   var files = list.map(function (s) { return { name: safeName(s.name) + '.wav', bytes: wavOf(s, true).buffer, role: 'mix' }; });
-  postToWorkbench(files, list.length === 1 ? list[0].name : plural(list.length, 'sound'), 'sounds-');
+  postToWorkbench(files, list.length === 1 ? list[0].name : plural(list.length, 'sound'), 'sounds-', group);
 }
 
 /* ---------- recording with the microphone ----------
@@ -1463,7 +1468,9 @@ function endRecording(fromQuiet) {
    one big button, the takes of this session, and Save session. A plan comes from the Plans panel here, from a plan
    file, or from Kurator or another browser as a link or QR code (#plan=..., read here and never sent to a server).
    Takes are ordinary sounds (Your sounds) with the plan, shot, session and, when asked for, the place in their meta. */
-var PLANS = [], RV = { plan: '', shot: '', chips: [], session: null, auto: false, loc: false }, DEFAULT_CHIPS = ['Nature', 'Objects', 'Ambience', 'Foley'];
+/* RV.chips are the tags switched on for the next take; RV.mine are the quick tags the recordist made (kept until they
+   forget them with the cross next to the tag), shown with every plan */
+var PLANS = [], RV = { plan: '', shot: '', chips: [], mine: [], session: null, auto: false, loc: false }, DEFAULT_CHIPS = ['Nature', 'Objects', 'Ambience', 'Foley'];
 function loadRV() {
   try {
     var p = JSON.parse(localStorage.getItem('bfx-plans') || '[]');
@@ -1471,6 +1478,9 @@ function loadRV() {
     var r = JSON.parse(localStorage.getItem('bfx-rv') || '{}');
     ['plan', 'shot'].forEach(function (k) { if (typeof r[k] === 'string') RV[k] = r[k]; });
     if (Array.isArray(r.chips)) RV.chips = r.chips.filter(function (c) { return typeof c === 'string'; });
+    if (Array.isArray(r.mine)) RV.mine = r.mine.filter(function (c) { return typeof c === 'string'; });
+    /* tags made before they were kept: the ones still switched on that no plan offers */
+    RV.chips.forEach(function (c) { if (RV.mine.indexOf(c) < 0 && !planChip(c)) RV.mine.push(c); });
     if (r.session && typeof r.session.id === 'string') RV.session = r.session;
     RV.auto = !!r.auto; RV.loc = !!r.loc;
   } catch (e) { /* storage may be off: plans last for this visit */ }
@@ -1479,7 +1489,7 @@ function loadRV() {
 function saveRV() {
   try {
     localStorage.setItem('bfx-plans', JSON.stringify(PLANS));
-    localStorage.setItem('bfx-rv', JSON.stringify({ plan: RV.plan, shot: RV.shot, chips: RV.chips, session: RV.session, auto: RV.auto, loc: RV.loc }));
+    localStorage.setItem('bfx-rv', JSON.stringify({ plan: RV.plan, shot: RV.shot, chips: RV.chips, mine: RV.mine, session: RV.session, auto: RV.auto, loc: RV.loc }));
   } catch (e) { /* storage may be off */ }
 }
 function newSession() { var d = new Date(); RV.session = { id: 'ses-' + d.getTime().toString(36), started: isoLocal(d) }; }
@@ -1488,10 +1498,40 @@ function curShot() { var p = curPlan(); return p ? p.shots.filter(function (s) {
 function takesOf(planId, shotId) { return LIB.filter(function (s) { var m = s.meta || {}; return m.plan && m.plan.id === planId && m.shot && m.shot.id === shotId; }).length; }
 function sessionTakes() { return LIB.filter(function (s) { return (s.meta || {}).session === RV.session.id; }); }
 function rvOpen() { return !$('recview').hidden; }
+function baseChips() { var p = curPlan(); return p && p.chips.length ? p.chips : DEFAULT_CHIPS; }
+function planChip(c) { return DEFAULT_CHIPS.indexOf(c) >= 0 || PLANS.some(function (p) { return p.chips.indexOf(c) >= 0; }); }
+/* the plan's tags (or the usual ones), then your own, then any still on from another plan */
 function chipSet() {
-  var p = curPlan(), list = (p && p.chips.length ? p.chips : DEFAULT_CHIPS).slice();
-  RV.chips.forEach(function (c) { if (list.indexOf(c) < 0) list.push(c); });
+  var list = baseChips().slice();
+  RV.mine.concat(RV.chips).forEach(function (c) { if (list.indexOf(c) < 0) list.push(c); });
   return list;
+}
+function toggleChip(c) {
+  var i = RV.chips.indexOf(c);
+  if (i >= 0) {
+    RV.chips.splice(i, 1);
+    /* a tag from another plan stays, as one of your own, instead of vanishing on the tap */
+    if (baseChips().indexOf(c) < 0 && RV.mine.indexOf(c) < 0) RV.mine.push(c);
+  } else RV.chips.push(c);
+  saveRV(); renderRV();
+}
+function forgetChip(c) {
+  RV.mine = RV.mine.filter(function (x) { return x !== c; }); RV.chips = RV.chips.filter(function (x) { return x !== c; });
+  saveRV(); renderRV(); setStatus('Forgot the tag ' + c + '. Takes made with it keep it.');
+}
+function addChips(text) {
+  var added = tagList(text).map(function (t) { return t.replace(/\s*\/\s*/g, '/').replace(/^\/+|\/+$/g, ''); }).filter(Boolean);
+  added.forEach(function (t) {
+    if (baseChips().indexOf(t) < 0 && RV.mine.indexOf(t) < 0) RV.mine.push(t);
+    if (RV.chips.indexOf(t) < 0) RV.chips.push(t);
+  });
+  if (added.length) { saveRV(); renderRV(); }
+  return added.length;
+}
+function showAddTag(on) {
+  $('rv-addtag').hidden = !on;
+  var b = $('rv-chips').querySelector('.chip-add'); if (b) b.setAttribute('aria-expanded', String(on));
+  if (on) { $('rv-newtag').value = ''; $('rv-newtag').focus(); }
 }
 /* what the next take will be called and carry */
 function nextTake() {
@@ -1526,13 +1566,19 @@ function renderRV() {
   $('rv-tags').textContent = [nt.project ? 'Project: ' + nt.project : '', uniq(nt.tags).join(', '), RV.loc ? 'with the location' : ''].filter(Boolean).join(' · ') || 'No project or tags yet: choose a plan, or set them under Your sounds.';
   var chips = $('rv-chips');
   chips.textContent = '';
+  var base = baseChips();
   chipSet().forEach(function (c) {
     var b = el('button', 'chip', c); b.type = 'button'; b.setAttribute('aria-pressed', String(RV.chips.indexOf(c) >= 0));
-    b.addEventListener('click', function () { var i = RV.chips.indexOf(c); if (i >= 0) RV.chips.splice(i, 1); else RV.chips.push(c); saveRV(); renderRV(); });
-    chips.appendChild(b);
+    b.addEventListener('click', function () { toggleChip(c); });
+    if (base.indexOf(c) >= 0) { chips.appendChild(b); return; }
+    var w = el('span', 'chipx'), x = el('button', 'chip-rm', '\u00d7');
+    x.type = 'button'; x.title = 'Forget the tag ' + c; x.setAttribute('aria-label', 'Forget the tag ' + c);
+    x.addEventListener('click', function () { forgetChip(c); });
+    w.appendChild(b); w.appendChild(x); chips.appendChild(w);
   });
-  var add = el('button', 'chip', '+ Tag'); add.type = 'button'; add.title = 'A quick tag of your own';
-  add.addEventListener('click', function () { var t = (window.prompt('Quick tag (use / for levels, e.g. Nature/Water):') || '').trim(); if (t && RV.chips.indexOf(t) < 0) { RV.chips.push(t); saveRV(); renderRV(); } });
+  var add = el('button', 'chip chip-add', '+ Tag'); add.type = 'button'; add.title = 'Make a quick tag of your own';
+  add.setAttribute('aria-controls', 'rv-addtag'); add.setAttribute('aria-expanded', String(!$('rv-addtag').hidden));
+  add.addEventListener('click', function () { showAddTag($('rv-addtag').hidden); });
   chips.appendChild(add);
   $('rv-auto').checked = RV.auto; $('rv-loc').checked = RV.loc;
   var takes = sessionTakes().slice().reverse(), tl = $('rv-takes');
@@ -1555,6 +1601,7 @@ function renderRV() {
   });
   $('rv-save').disabled = !takes.length;
   $('rv-share').hidden = !(takes.length && canShareFiles());
+  $('rv-wb').hidden = !(takes.length && WB.url);
   recButtons();
 }
 function canShareFiles() {
@@ -1611,6 +1658,11 @@ function sessionZip(list, plan) {
     files: entries };
   files.push({ name: 'ballistic-session.json', data: utf8Bytes(JSON.stringify(manifest, null, 1)) });
   return B.zipFiles(files);
+}
+/* the library group in SFX Workbench for this session's takes: its project and day */
+function sessionGroup() {
+  var p = curPlan(), proj = p ? p.project || p.name : SESSION.project.trim();
+  return (proj ? proj + ' ' : 'Takes ') + (RV.session && RV.session.started ? RV.session.started.slice(0, 10) : isoLocal(new Date()).slice(0, 10));
 }
 function sessionZipName(project) {
   var d = isoLocal(new Date());
@@ -1760,6 +1812,16 @@ function wireRV() {
   });
   $('rv-save').addEventListener('click', function () { saveSession(false); });
   $('rv-share').addEventListener('click', function () { saveSession(true); });
+  $('rv-wb').addEventListener('click', function () { var t = sessionTakes(); if (t.length) sendSounds(t, sessionGroup()); });
+  $('rv-addtag').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var n = addChips($('rv-newtag').value);
+    showAddTag(false);
+    var b = $('rv-chips').querySelector('.chip-add'); if (b) b.focus();
+    if (n) setStatus(plural(n, 'tag') + ' on for the next takes, and kept for later.');
+  });
+  $('rv-newtag-x').addEventListener('click', function () { showAddTag(false); var b = $('rv-chips').querySelector('.chip-add'); if (b) b.focus(); });
+  $('rv-newtag').addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.stopPropagation(); $('rv-newtag-x').click(); } });
   $('rv-new').addEventListener('click', function () { newSession(); saveRV(); renderRV(); setStatus('A new session: Save session now gathers only the takes from here on.'); });
   wirePlans();
 }
@@ -1975,9 +2037,9 @@ function openWorkbench() {
   try { w.focus(); } catch (e) { /* focus is up to the browser */ }
   return true;
 }
-function postToWorkbench(files, what, idBase) { if (openWorkbench()) queueForWorkbench(files, what, idBase); }
-function queueForWorkbench(files, what, idBase) {
-  WB.pending = { type: 'sfxworkbench:import', v: 1, id: (idBase + Date.now().toString(36)).replace(/[^\w.-]+/g, '-').slice(-60), from: 'Ballistic Foley Lab', group: 'Ballistic Foley Lab', files: files, what: what };
+function postToWorkbench(files, what, idBase, group) { if (openWorkbench()) queueForWorkbench(files, what, idBase, group); }
+function queueForWorkbench(files, what, idBase, group) {
+  WB.pending = { type: 'sfxworkbench:import', v: 1, id: (idBase + Date.now().toString(36)).replace(/[^\w.-]+/g, '-').slice(-60), from: 'Ballistic Foley Lab', group: (group || 'Ballistic Foley Lab').slice(0, 60), files: files, what: what };
   if (WB.ready) postPending();
   var msg = WB.pending;
   setStatus('Sending ' + what + ' to SFX Workbench');
@@ -1994,9 +2056,9 @@ window.addEventListener('message', function (e) {
     if (WB.pending) postPending();
   } else if (e.data.type === 'sfxworkbench:imported' && WB.pending && e.data.id === WB.pending.id) {
     clearTimeout(WB.timer);
-    var what = WB.pending.what;
+    var what = WB.pending.what, group = WB.pending.group;
     WB.pending = null;
-    setStatus('Sent ' + what + ' to SFX Workbench: in its library under Ballistic Foley Lab.');
+    setStatus('Sent ' + what + ' to SFX Workbench: in its library under ' + group + '.');
   }
 });
 

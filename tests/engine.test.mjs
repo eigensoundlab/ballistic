@@ -315,6 +315,22 @@ test('a saved WAV carries its date, project and keywords where sound libraries a
   assert.equal(B.xmpText(meta), xmp);
 });
 
+test('a mono recording is saved as one channel, and says so in bext and iXML', () => {
+  const L = Float32Array.from([0, 0.25, -0.5, 1]), dec = new TextDecoder();
+  for (const [enc, bps, read] of [[B.encodeWav, 3, (dv, o) => ((dv.getUint8(o) | dv.getUint8(o + 1) << 8 | dv.getInt8(o + 2) << 16) / 8388607)],
+    [B.encodeWavFloat, 4, (dv, o) => dv.getFloat32(o, true)]]) {
+    const bytes = enc(L, null, { title: 'Knock', date: '2026-11-15T22:40:00+01:00' }), dv = new DataView(bytes.buffer), found = {};
+    for (let p = 12; p + 8 <= bytes.length;) { const id = dec.decode(bytes.subarray(p, p + 4)), n = dv.getUint32(p + 4, true); found[id] = { at: p + 8, b: bytes.subarray(p + 8, p + 8 + n) }; p += 8 + n + (n & 1); }
+    const fmt = new DataView(found['fmt '].b.buffer, found['fmt '].b.byteOffset);
+    assert.equal(fmt.getUint16(2, true), 1, 'channels'); assert.equal(fmt.getUint16(12, true), bps, 'block align'); assert.equal(fmt.getUint32(8, true), FS * bps, 'bytes per second');
+    assert.equal(found.data.b.length, L.length * bps);
+    L.forEach((v, i) => assert.ok(Math.abs(read(dv, found.data.at + i * bps) - v) < 1e-6, 'sample ' + i));
+    assert.ok(dec.decode(found.bext.b.subarray(602)).includes(',M=mono,'));
+    assert.match(dec.decode(found.iXML.b), /<TRACK_COUNT>1<\/TRACK_COUNT>/);
+  }
+  assert.equal(new DataView(B.encodeWav(L, L).buffer).getUint16(22, true), 2, 'two channels when both are given');
+});
+
 test('a plan survives its link, and a damaged link is refused', () => {
   const plan = { id: 'plan-forest', name: 'Lesní procházka', project: 'Forest walk', chips: ['Nature', 'Objects'],
     shots: [{ id: 's1', name: 'Blackbird', tags: ['Nature/Birds'], takes: 3, ucs: 'BIRDSong', notes: '' }, { id: 's2', name: 'Wind', tags: [], takes: 1, ucs: '', notes: 'from the ridge' }] };

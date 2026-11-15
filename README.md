@@ -78,7 +78,8 @@ and resampled to 48 kHz by your browser and never leave your computer unless you
 still clear its storage when space runs low, so save what matters.
 
 **Project**, **Tags** and **Recordist** at the top go with every new recording and loaded file, and with saved renders.
-Tags are separated by commas, with / for levels (*Nature/Birds*). A saved WAV (24-bit, 48 kHz) carries:
+Tags are separated by commas, with / for levels (*Nature/Birds*). A saved WAV (24-bit, 48 kHz; one channel when the
+sound has one, as from most phone microphones) carries:
 
 | Chunk | What is in it |
 |---|---|
@@ -94,7 +95,8 @@ source). It also shows the bext and iXML fields of the WAV itself.
 
 **Record** at the top right opens a view made for a phone in one hand: a plan's shots to tick off, quick tags to switch
 on (*Nature*, *Objects*, *Ambience*, *Foley*, or a plan's own), one big button, the takes of this session, and **Save
-session**. A take is named after its shot and number (with the shot's UCS category in front when it has one, which
+session**. **+ Tag** makes a tag of your own on the spot (*Birds*, or levels like *Nature/Water*); your own tags stay in
+the row, with every plan, until you forget one with the cross next to it. Takes made with a tag keep it. A take is named after its shot and number (with the shot's UCS category in front when it has one, which
 Kurator recognises), and carries the plan, the shot, the project, the tags, the notes typed for it and, if you switch
 it on, the place: **Add the location** asks the browser for the position at the start of each take and writes it into
 the iXML and XMP of the file only. A shot that has all its takes hands over to the next open one.
@@ -104,51 +106,21 @@ category. A plan goes to a phone as a link or a **QR code**: the plan travels in
 which is never sent to any server. Kurator makes the same links. Plans also save and load as `.plan.json` files.
 
 **Save session** writes one zip: each take as WAV with its metadata, a `.xmp` sidecar each, and `ballistic-session.json`
-(the plan, and per file its shot, take, tags, notes and place). **Share** hands the zip to the phone's share sheet where
-the browser allows it (Files, iCloud Drive, Google Drive, Syncthing). Put it in a folder your computer syncs and that
-is in Kurator's library: Kurator unpacks it next to itself, tags the sounds in the right groups and counts the takes
-against the plan. *Save all* under Your sounds writes the same kind of zip.
+(the plan, and per file its shot, take, tags, notes and place). **Share session** hands the zip to the phone's share
+sheet where the browser allows it (Files, iCloud Drive, Google Drive, Syncthing). Put it in a folder your computer syncs
+and that is in Kurator's library: Kurator unpacks it next to itself, tags the sounds in the right groups and counts the
+takes against the plan. Kurator runs on your computer, so the synced folder is how a phone reaches it. *Save all* under
+Your sounds writes the same kind of zip.
+
+**Send to SFX Workbench** (on the site) opens SFX Workbench in a new tab with the session's takes, in a library group
+named after the project and day (*Forest walk 2026-11-15*), with their date and tags kept in the files. What you make
+from them there keeps them too, and goes back to Kurator through Kurator's own SFX Workbench link.
 
 Recording asks the browser to switch its voice processing off (echo cancellation, noise suppression, automatic gain).
 It waits for the sound to start, keeping 0.15 s before it, so the tap on the screen is not in the take; in Record,
 *Stop by itself after 1.5 s of quiet* ends a take when its ring has died away (knocks, claps and rooms elsewhere always
 do). Recording needs the site (https) or a local server, and the browser's permission; the offline file can record in
 Chrome, and inside the Claude viewer it cannot, so record with another app there and load the file.
-
-Phone browsers do not always honour the request to switch processing off, iPhone browsers least of all. For the best
-takes on an iPhone, record in Voice Memos with Settings, Voice Memos, Audio Quality set to Lossless, save the memo to
-Files, and load it. On any phone: hold it still or stand it on something, mic end toward the sound (about 20 to 30 cm
-from a small object), switch notifications off, keep peaks short of clipping, and leave a second of quiet after a
-knock so its ring is all there.
-
-### Keeping, saving and sending your sounds
-
-Every sound you record or load also appears under **Your sounds**, where it stays in this browser (IndexedDB) until you
-remove it, across reloads. From there: **Play**, **Save WAV**, **Send** to SFX Workbench, **Edit** (name, project, tags,
-notes) and **Remove**; **Save all** writes one zip, **Send all** hands every sound to SFX Workbench. Sounds are decoded
-and resampled to 48 kHz by your browser and never leave your computer unless you save or send them. The browser can
-still clear its storage when space runs low, so save what matters.
-
-**Project**, **Tags** and **Recordist** at the top go with every new recording and loaded file, and with saved renders.
-Tags are separated by commas, with / for levels (*Nature/Birds*). A saved WAV (24-bit, 48 kHz) carries:
-
-| Chunk | What is in it |
-|---|---|
-| `bext` (Broadcast WAV) | description (name and notes), originator, reference, origination date and time, time reference |
-| `iXML` | project, scene, take, note, tracks; in USER: input device, phone model (Chrome), browser, the sample rate recorded at, whether the browser's voice processing was off, time zone; for renders the parameters |
-| `_PMX` (XMP) | keywords as Lightroom (`lr:hierarchicalSubject`), digiKam (`TagsList`) and Kurator read them, with Kurator's groups as roots: `Nature\|Birds`, `Projects\|Forest walk`, `Source\|Ballistic Foley Lab`; creation date; title, notes, recordist |
-
-*Save all* adds a `.wav.xmp` sidecar per sound. [Kurator](https://github.com/eigensoundlab/kurator) takes the sidecar's
-date as the file's date and, with *Import keywords*, turns the keywords into tags in the right groups (subjects, project,
-source). It also shows the bext and iXML fields of the WAV itself.
-
-### Recording, on a phone or elsewhere
-
-**Record** asks the browser to switch its voice processing off (echo cancellation, noise suppression, automatic
-gain). It waits for the sound to start, keeping 0.15 s before it, so the tap on the screen is not in the take. Knocks,
-claps and rooms stop by themselves once the ring has died away; anything else stops on Stop or after 15 s. Recording
-needs the site (https) or a local server, and the browser's permission; the offline file can record in Chrome, and
-inside the Claude viewer it cannot, so record with another app there and load the file.
 
 Phone browsers do not always honour the request to switch processing off, iPhone browsers least of all. For the best
 takes on an iPhone, record in Voice Memos with Settings, Voice Memos, Audio Quality set to Lossless, save the memo to

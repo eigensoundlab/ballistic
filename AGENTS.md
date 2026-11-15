@@ -52,7 +52,8 @@ as `bext`, `iXML` and `_PMX` (XMP) chunks ahead of the audio; `xmpText(meta)` is
 Kurator's sidecar format (`kurator/xmp.py`): paths with `|` in `lr:hierarchicalSubject`, `/` in `digiKam:TagsList`,
 group roots `Projects`, `Status`, `Source`. Do not add Kurator's own namespace: the sidecar is not Kurator's.
 
-Record (`#recview`, the record view section of `src/app.js`) records into the slot `take`; plans live in localStorage
+Record (`#recview`, the record view section of `src/app.js`) records into the slot `take`; quick tags are `RV.chips`
+(on for the next take) and `RV.mine` (made by the recordist, kept until forgotten), both in `bfx-rv`; plans live in localStorage
 (`bfx-plans`) and travel as `#plan=` links: `packPlan` / `unpackPlan` in the engine (base64url JSON with short keys,
 the same in Kurator's `kurator/plans.py`). `qrCode` / `qrSvg` draw the QR code. A session zip holds the WAVs, their
 sidecars and `ballistic-session.json` (format `ballistic-session`, version 1): change it only together with Kurator's

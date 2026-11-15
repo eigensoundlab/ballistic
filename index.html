@@ -64,6 +64,17 @@ body { background: var(--bg); color: var(--ink); font: 400 15px/1.45 var(--font-
 .rv-take { margin: 0; font: 700 20px/1.2 var(--font-display); letter-spacing: 0.02em; overflow-wrap: anywhere; }
 .rv-tags { margin: 4px 0 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .rv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chipx { display: inline-flex; }
+.chipx .chip { border-radius: 999px 0 0 999px; padding-right: 9px; }
+.chip-rm { font: 500 15px/1 var(--font-body); color: var(--muted); background: transparent; border: 1px solid var(--line); border-left: 0; border-radius: 0 999px 999px 0; padding: 0 12px 0 9px; min-width: 34px; cursor: pointer; }
+.chip-rm:hover { color: var(--ink); border-color: var(--muted); }
+.chipx .chip[aria-pressed="true"] + .chip-rm { border-color: var(--ink); }
+.chip-add[aria-expanded="true"] { border-color: var(--tracer); }
+.rv-addtag { display: flex; gap: 6px; align-items: center; }
+.rv-in > .note { margin: 0; font-size: 14px; line-height: 1.45; color: var(--muted); }
+.rv-addtag[hidden] { display: none; }
+.rv-addtag input { flex: 1 1 auto; min-width: 0; font: 400 16px/1.2 var(--font-body); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 8px; }
+.rv-addtag input::placeholder { color: var(--muted); }
 .rv-rec { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0; }
 .rv-go { width: 112px; height: 112px; border-radius: 50%; border: 6px solid var(--panel); outline: 2px solid var(--tracer); background: var(--tracer); color: #fff; font: 900 18px/1 var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; }
 .rv-go.live { border-radius: 24px; animation: rvpulse 1.2s ease-in-out infinite; }
@@ -272,6 +283,11 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
       <p class="rv-tags" id="rv-tags"></p>
     </div>
     <div class="rv-chips" id="rv-chips" role="group" aria-label="Tags for the next take"></div>
+    <form class="rv-addtag" id="rv-addtag" hidden>
+      <input type="text" id="rv-newtag" aria-label="New tag" placeholder="e.g. Birds or Nature/Water" autocomplete="off" enterkeyhint="done">
+      <button type="submit" class="btn small">Add</button>
+      <button type="button" class="btn small" id="rv-newtag-x">Cancel</button>
+    </form>
     <div class="rv-rec">
       <button type="button" class="rv-go" id="rec-take">Record</button>
       <div class="rv-meter" aria-hidden="true"><span id="rv-meter"></span></div>
@@ -286,10 +302,12 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
     <ul class="rv-takes" id="rv-takes"></ul>
     <div class="toolrow">
       <button type="button" class="btn" id="rv-save">Save session</button>
-      <button type="button" class="btn" id="rv-share" hidden>Share</button>
+      <button type="button" class="btn" id="rv-share" hidden>Share session</button>
+      <button type="button" class="btn" id="rv-wb" hidden>Send to SFX Workbench</button>
       <button type="button" class="btn" id="rv-new">New session</button>
     </div>
-    <p class="note">Save session writes one zip: the takes as WAV with their date, tags and notes, a .xmp sidecar each, and a list for Kurator. Put it in a folder your computer syncs (Syncthing, iCloud Drive, Google Drive, OneDrive) that is in Kurator's library: Kurator unpacks it, tags the sounds and counts the takes against the plan.</p>
+    <p class="note">For Kurator: Save session (or Share session, on a phone) writes one zip with the takes as WAV, their date, tags and notes, a .xmp sidecar each, and a list for Kurator. Put it in a folder your computer syncs (Syncthing, iCloud Drive, Google Drive, OneDrive) that is in Kurator's library: Kurator unpacks it, tags the sounds and counts the takes against the plan. Kurator runs on your computer, so a phone cannot reach it directly.</p>
+    <p class="note">For SFX Workbench: Send to SFX Workbench opens it in a new tab with this session's takes, their tags kept, in a library group named after the project and day.</p>
   </div>
   <div class="rv-in" id="pe" hidden>
     <div class="rv-top">

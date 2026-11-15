@@ -2673,8 +2673,8 @@ function dateParts(iso) {
   var m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(iso || '');
   return m ? { date: m[1], time: m[2] + ':' + m[3] + ':' + m[4], secs: +m[2] * 3600 + +m[3] * 60 + +m[4] } : null;
 }
-function bextBytes(meta, float) {
-  var hist = utf8(asciiOf('A=' + (float ? 'PCM_FLOAT' : 'PCM') + ',F=' + FS + ',W=' + (float ? 32 : 24) + ',M=stereo,T=' + ORIGINATOR) + '\r\n');
+function bextBytes(meta, float, nch) {
+  var hist = utf8(asciiOf('A=' + (float ? 'PCM_FLOAT' : 'PCM') + ',F=' + FS + ',W=' + (float ? 32 : 24) + ',M=' + (nch === 1 ? 'mono' : 'stereo') + ',T=' + ORIGINATOR) + '\r\n');
   var b = new Uint8Array(602 + hist.length), dv = new DataView(b.buffer), d = dateParts(meta.date);
   function put(off, len, s) { var a = asciiOf(s), i; for (i = 0; i < a.length && i < len; i++) b[off + i] = a.charCodeAt(i); }
   put(0, 256, meta.title + (meta.note ? '. ' + meta.note : ''));
@@ -2689,7 +2689,7 @@ function bextBytes(meta, float) {
   b.set(hist, 602);
   return b;
 }
-function ixmlText(meta) {
+function ixmlText(meta, nch) {
   var d = dateParts(meta.date), ref = d ? d.secs * FS : 0, user = (meta.user || []).filter(function (u) { return u[1] != null && u[1] !== ''; });
   function el(tag, v) { return v == null || v === '' ? '' : ' <' + tag + '>' + xmlEsc(v) + '</' + tag + '>\n'; }
   return '<?xml version="1.0" encoding="UTF-8"?>\n<BWFXML>\n' + el('IXML_VERSION', '2.10') + el('PROJECT', meta.project) +
@@ -2697,9 +2697,11 @@ function ixmlText(meta) {
     ' <SPEED>\n  <FILE_SAMPLE_RATE>' + FS + '</FILE_SAMPLE_RATE>\n  <TIMESTAMP_SAMPLE_RATE>' + FS + '</TIMESTAMP_SAMPLE_RATE>\n' +
     '  <TIMESTAMP_SAMPLES_SINCE_MIDNIGHT_HI>' + Math.floor(ref / 4294967296) + '</TIMESTAMP_SAMPLES_SINCE_MIDNIGHT_HI>\n' +
     '  <TIMESTAMP_SAMPLES_SINCE_MIDNIGHT_LO>' + ref % 4294967296 + '</TIMESTAMP_SAMPLES_SINCE_MIDNIGHT_LO>\n </SPEED>\n' +
+    (nch === 1 ? ' <TRACK_LIST>\n  <TRACK_COUNT>1</TRACK_COUNT>\n' +
+    '  <TRACK><CHANNEL_INDEX>1</CHANNEL_INDEX><INTERLEAVE_INDEX>1</INTERLEAVE_INDEX><NAME>Mono</NAME></TRACK>\n </TRACK_LIST>\n' :
     ' <TRACK_LIST>\n  <TRACK_COUNT>2</TRACK_COUNT>\n' +
     '  <TRACK><CHANNEL_INDEX>1</CHANNEL_INDEX><INTERLEAVE_INDEX>1</INTERLEAVE_INDEX><NAME>L</NAME></TRACK>\n' +
-    '  <TRACK><CHANNEL_INDEX>2</CHANNEL_INDEX><INTERLEAVE_INDEX>2</INTERLEAVE_INDEX><NAME>R</NAME></TRACK>\n </TRACK_LIST>\n' +
+    '  <TRACK><CHANNEL_INDEX>2</CHANNEL_INDEX><INTERLEAVE_INDEX>2</INTERLEAVE_INDEX><NAME>R</NAME></TRACK>\n </TRACK_LIST>\n') +
     (meta.location ? ' <LOCATION>\n  <LOCATION_GPS>' + meta.location.lat.toFixed(6) + ', ' + meta.location.lon.toFixed(6) + '</LOCATION_GPS>\n' +
       (meta.location.alt != null ? '  <LOCATION_ALTITUDE>' + Math.round(meta.location.alt) + '</LOCATION_ALTITUDE>\n' : '') + ' </LOCATION>\n' : '') +
     el('USER', user.map(function (u) { return u[0] + ': ' + u[1]; }).join('\n')) + '</BWFXML>\n';
@@ -2736,13 +2738,14 @@ function xmpText(meta) {
     '\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end="w"?>\n';
   return s;
 }
-/* a stereo WAV at 48 kHz, 24-bit PCM or 32-bit float, with the metadata chunks ahead of the audio when meta is given */
+/* a WAV at 48 kHz, 24-bit PCM or 32-bit float, with the metadata chunks ahead of the audio when meta is given:
+   stereo, or mono when R is null (a recording from a one-channel microphone stays one channel) */
 function wavFile(L, R, float, meta) {
-  var N = L.length, bps = float ? 4 : 3, block = 2 * bps, chunks = [], fmt = new Uint8Array(16), fv = new DataView(fmt.buffer), n, c;
-  fv.setUint16(0, float ? 3 : 1, true); fv.setUint16(2, 2, true); fv.setUint32(4, FS, true); fv.setUint32(8, FS * block, true);
+  var N = L.length, nch = R ? 2 : 1, bps = float ? 4 : 3, block = nch * bps, chunks = [], fmt = new Uint8Array(16), fv = new DataView(fmt.buffer), n, c;
+  fv.setUint16(0, float ? 3 : 1, true); fv.setUint16(2, nch, true); fv.setUint32(4, FS, true); fv.setUint32(8, FS * block, true);
   fv.setUint16(12, block, true); fv.setUint16(14, bps * 8, true);
   chunks.push(['fmt ', fmt]);
-  if (meta) { chunks.push(['bext', bextBytes(meta, float)]); chunks.push(['iXML', utf8(ixmlText(meta))]); chunks.push(['_PMX', utf8(xmpText(meta))]); }
+  if (meta) { chunks.push(['bext', bextBytes(meta, float, nch)]); chunks.push(['iXML', utf8(ixmlText(meta, nch))]); chunks.push(['_PMX', utf8(xmpText(meta))]); }
   var dataLen = N * block, size = 4;
   chunks.forEach(function (ch) { size += 8 + ch[1].length + (ch[1].length & 1); });
   size += 8 + dataLen;
@@ -2751,8 +2754,8 @@ function wavFile(L, R, float, meta) {
   id('RIFF'); dv.setUint32(o, size, true); o += 4; id('WAVE');
   chunks.forEach(function (ch) { id(ch[0]); dv.setUint32(o, ch[1].length, true); o += 4; bytes.set(ch[1], o); o += ch[1].length + (ch[1].length & 1); });
   id('data'); dv.setUint32(o, dataLen, true); o += 4;
-  if (float) for (n = 0; n < N; n++) { dv.setFloat32(o, L[n], true); dv.setFloat32(o + 4, R[n], true); o += 8; }
-  else for (n = 0; n < N; n++) for (c = 0; c < 2; c++) {
+  if (float) for (n = 0; n < N; n++) { dv.setFloat32(o, L[n], true); o += 4; if (R) { dv.setFloat32(o, R[n], true); o += 4; } }
+  else for (n = 0; n < N; n++) for (c = 0; c < nch; c++) {
     var v = Math.round(clamp(c ? R[n] : L[n], -1, 1) * 8388607);
     bytes[o++] = v & 255; bytes[o++] = (v >> 8) & 255; bytes[o++] = (v >> 16) & 255;
   }
