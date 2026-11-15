@@ -196,14 +196,21 @@ var MATERIALS = {
    opt.maxModes / t60Scale / noGrains give a light version for the many small hits of debris and fragments. */
 function modalHit(name, E, sizeScale, rnd, opt) {
   opt = opt || {};
-  var m = MATERIALS[name], amp = 6 * m.eff * Math.sqrt(Math.max(E, 1e-6)), ts = opt.t60Scale || 1, light = !!opt.maxModes;
+  var m = matSpec(name), amp = 6 * m.eff * Math.sqrt(Math.max(E, 1e-6)), ts = opt.t60Scale || 1, light = !!opt.maxModes;
+  /* a measured object: its own decays, shorter as the piece gets smaller and rings higher */
+  var rhoT = m.t60s ? clamp(Math.pow(m.f0 * sizeScale / m.f1, -0.8), 0.05, 3) : 1;
   var useGrains = m.grains && !opt.noGrains, cut = light ? 0.85 : 1.15, slack = light ? 64 : 2400;
-  var tail = Math.max(m.t60 * ts * cut, useGrains ? m.grains.spread + 0.3 : 0, m.noise.dur * 4 + 0.01, 0.03);
+  var tail = Math.max(m.t60 * ts * rhoT * cut, useGrains ? m.grains.spread + 0.3 : 0, m.noise.dur * 4 + 0.01, 0.03);
   var len = Math.ceil(tail * FS) + slack, buf = new Float32Array(len), body = len - slack, k, i, gsum = 0, modes = [];
   var nm = light ? Math.min(opt.maxModes, m.ratios.length) : m.ratios.length;
   for (k = 0; k < nm; k++) {
     var f = m.f0 * sizeScale * m.ratios[k] * (1 + (rnd() - 0.5) * 0.07);
     if (f > 19000) continue;
+    if (m.t60s) {
+      var gm = m.gains[k] * (0.8 + 0.4 * rnd()) / (1 + Math.pow(f * m.contact * 3, 2));
+      modes.push({ f: f, g: gm, t60: m.t60s[k] * ts * rhoT * (0.85 + 0.3 * rnd()) }); gsum += gm;
+      continue;
+    }
     var g = (0.5 + rnd()) / Math.sqrt(1 + k) / (1 + Math.pow(f * m.contact * 3, 2));
     modes.push({ f: f, g: g, t60: m.t60 * ts / (1 + m.slope * k) * (0.8 + 0.4 * rnd()) }); gsum += g;
   }
@@ -334,7 +341,7 @@ var ENVS = {
             taps: [{ ms: 480, g: 0.35, pan: 0.5 }, { ms: 900, g: 0.25, pan: -0.6 }, { ms: 1500, g: 0.15, pan: 0.2 }] },
   indoor: { name: 'Indoor range', delays: [9, 14, 17, 22, 30, 38, 48, 56], rt60: 1.1, damp: 6000, wet: -5 },
   water:  { name: 'Deep water', delays: [131, 197, 263, 347, 431, 523, 617, 733], rt60: 3.8, damp: 900, wet: -9 },
-  ir:     { name: 'Imported room (IR)', ir: true }
+  ir:     { name: 'Recorded room', ir: true }
 };
 
 /* ---------- shared bits for the event sources ---------- */
@@ -422,7 +429,7 @@ function explosionLayers(pl, o, rnd, layers, ev, lab) {
     var gD = o.gDebris * dbToLin(DEBRIS_BOOST_DB);
     pl.debris.forEach(function (d) {
       var sc = clamp(Math.pow(0.05 / d.m, 1 / 3), 0.5, 3);
-      var hb = modalHit(o.surface, d.E, sc, rnd, { maxModes: 4, t60Scale: clamp(1 / sc, 0.3, 1.5), noGrains: true });
+      var hb = o.grains ? grainHit(o.grains, d.E, sc, 1, rnd) : modalHit(MATERIALS[o.surface] ? o.surface : 'dirt', d.E, sc, rnd, { maxModes: 4, t60Scale: clamp(1 / sc, 0.3, 1.5), noGrains: true });
       scale(hb, 1 / d.r); airFilter(hb, d.r);
       layers.push({ m: hb, t: o.t0 + d.t + d.r / C, pan: clamp(d.pan + o.pan, -1, 1), g: gD });
     });
@@ -522,13 +529,14 @@ function planDestruction(o, rnd) {
     frs.push({ m: m, h: h, t0: t0, x: x, r: r, pan: x / r * 0.9, hits: hits, sc: clamp(Math.pow(0.2 / m, 1 / 3), 0.25, 5) });
   }
   lands.sort(function (a, b2) { return a - b2; });
+  var scs = frs.map(function (f) { return f.sc; }).sort(function (a, b2) { return a - b2; });
   var nCr = Math.round(clamp(n * 1.5 * d.brittle + 6, 6, 160)), cracks = [], bs = clamp(Math.pow(0.2 / o.mass, 1 / 3), 0.25, 5);
   for (i = 0; i < nCr; i++) cracks.push({ t: Tfrac * Math.pow(rnd(), 2), E: o.mass * g * o.height * 0.002 * (0.2 + rnd()), sc: Math.min(6, bs * (1.5 + 3 * rnd())), x: o.spread * (rnd() - 0.5) });
-  return { frs: frs, cracks: cracks, Tfrac: Tfrac, E: o.mass * g * o.height, tEnd: tEnd, tFirst: tFirst, tMed: lands[lands.length >> 1], Emax: Emax, big: big, baseSc: bs, n: n };
+  return { frs: frs, cracks: cracks, Tfrac: Tfrac, E: o.mass * g * o.height, tEnd: tEnd, tFirst: tFirst, tMed: lands[lands.length >> 1], Emax: Emax, big: big, baseSc: bs, n: n, scMed: scs[scs.length >> 1] || 1 };
 }
 /* Stick-slip before failure: a jittered slip train that speeds up toward the break and rings the body's modes. */
 function groanBuf(type, mat, sc, dur, rnd) {
-  var N = Math.ceil(dur * FS), tot = N + Math.ceil(0.4 * FS), buf = new Float32Array(tot + 64), M = MATERIALS[mat], k, n;
+  var N = Math.ceil(dur * FS), tot = N + Math.ceil(0.4 * FS), buf = new Float32Array(tot + 64), M = matSpec(mat), k, n;
   var base = { groan: 0.5, creak: 0.06, rumble: 0.08, tick: 0.04 }[type], rate0 = { groan: 28, creak: 140, rumble: 16, tick: 3 }[type];
   var c1 = [], c2 = [], y1 = [], y2 = [], gg = [];
   for (k = 0; k < Math.min(5, M.ratios.length); k++) {
@@ -554,41 +562,43 @@ function groanBuf(type, mat, sc, dur, rnd) {
   }
   return buf;
 }
-function fragmentLayers(pl, mat, t0, gain, pan, rnd, layers) {
-  var d = DS[mat];
+function fragmentLayers(pl, mat, t0, gain, pan, rnd, layers, grains) {
   pl.frs.forEach(function (f) {
     f.hits.forEach(function (h, bi) {
-      var ts = clamp(Math.pow(f.sc, -0.6), 0.25, mat === 'steel' ? 0.7 : 1.5) * (bi ? 0.8 : 1);
-      var hb = modalHit(mat, h.E, f.sc, rnd, { maxModes: f.m > 1 ? 6 : 4, t60Scale: ts, noGrains: true });
+      /* a measured object scales its own decays with size; the built-in materials use this rule of thumb */
+      var ts = typeof mat !== 'string' ? (bi ? 0.8 : 1) : clamp(Math.pow(f.sc, -0.6), 0.25, mat === 'steel' ? 0.7 : 1.5) * (bi ? 0.8 : 1);
+      var hb = grains ? grainHit(grains, h.E, f.sc, pl.scMed, rnd) : modalHit(mat, h.E, f.sc, rnd, { maxModes: f.m > 1 ? 6 : 4, t60Scale: ts, noGrains: true });
       scale(hb, 1 / f.r); airFilter(hb, f.r);
       layers.push({ m: hb, t: t0 + h.t + f.r / C, pan: clamp(f.pan + pan, -1, 1), g: gain });
     });
   });
 }
 function destructionLayers(pl, p, o, rnd, layers, ev, lab) {
-  var d = DS[p.dsMat], r = Math.max(1, p.dsDist), tA = o.t0 + r / C, buf, i;
-  var trigPk = 6 * MATERIALS[p.dsMat].eff * Math.sqrt(pl.E * 0.25) / r;
+  var mat = dsMaterial(p), d = DS[p.dsMat === 'measured' ? p.dsLike : p.dsMat], r = Math.max(1, p.dsDist), tA = o.t0 + r / C, buf, i;
+  var grains = p.dsDebris === 'rec' ? getGrains(p.grAsset) : null;
+  var trigPk = 6 * matSpec(mat).eff * Math.sqrt(pl.E * 0.25) / r;
   if (o.g1 > 0) {
-    buf = modalHit(p.dsMat, pl.E * 0.25, pl.baseSc, rnd); scale(buf, 1 / r); postLayer(buf, r, o.ground);
+    buf = modalHit(mat, pl.E * 0.25, pl.baseSc, rnd); scale(buf, 1 / r); postLayer(buf, r, o.ground);
     layers.push({ m: buf, t: tA, pan: o.pan, g: o.g1 });
     pl.cracks.forEach(function (c) {
-      var cb = modalHit(p.dsMat, c.E, c.sc, rnd, { maxModes: 3, t60Scale: 0.4, noGrains: true }), rr = Math.hypot(r, c.x);
+      var cb = modalHit(mat, c.E, c.sc, rnd, { maxModes: 3, t60Scale: 0.4, noGrains: true }), rr = Math.hypot(r, c.x);
       scale(cb, 1 / rr); airFilter(cb, rr);
       layers.push({ m: cb, t: o.t0 + c.t + rr / C, pan: clamp(o.pan + c.x / rr * 0.9, -1, 1), g: o.g1 });
     });
   }
   ev.push({ k: 'crack', t: tA, label: lab ? 'break' : '' });
   if (o.g2 > 0 && p.dsGroan > 0.05) {
-    buf = groanBuf(d.groan, p.dsMat, pl.baseSc, p.dsGroan, rnd); toPeak(buf, trigPk * 0.2); airFilter(buf, r);
+    buf = groanBuf(d.groan, mat, pl.baseSc, p.dsGroan, rnd); toPeak(buf, trigPk * 0.2); airFilter(buf, r);
     layers.push({ m: buf, t: tA - p.dsGroan, pan: o.pan, g: o.g2 }); ev.push({ k: 'pass', t: tA - p.dsGroan, label: lab ? 'stress' : '' });
   }
-  if (o.g4 > 0) fragmentLayers(pl, p.dsMat, o.t0, o.g4, o.pan, rnd, layers);
+  if (o.g4 > 0) fragmentLayers(pl, mat, o.t0, o.g4, o.pan, rnd, layers, grains);
   ev.push({ k: 'impact', t: tA + pl.tFirst, label: lab ? 'landing' : '' });
   if (o.g3 > 0) {
     /* fine debris scattered by each first landing */
     pl.frs.forEach(function (f) {
       for (var k = 0; k < d.fine; k++) {
-        var fb = modalHit(p.dsMat, f.hits[0].E * 0.01 * (0.2 + rnd()), Math.min(6, f.sc * (2 + 3 * rnd())), rnd, { maxModes: 3, t60Scale: 0.35, noGrains: true });
+        var fe = f.hits[0].E * 0.01 * (0.2 + rnd()), fsc = Math.min(6, f.sc * (2 + 3 * rnd()));
+        var fb = grains ? grainHit(grains, fe, fsc, pl.scMed, rnd) : modalHit(mat, fe, fsc, rnd, { maxModes: 3, t60Scale: 0.35, noGrains: true });
         scale(fb, 1 / f.r); airFilter(fb, f.r);
         layers.push({ m: fb, t: o.t0 + f.hits[0].t + 0.02 + 0.33 * rnd() + f.r / C, pan: clamp(f.pan + o.pan + (rnd() - 0.5) * 0.3, -1, 1), g: o.g3 });
       }
@@ -1742,8 +1752,9 @@ function disruptName(pl) { return pl.plasma ? 'disruption' : 'collapse'; }
    (the page decodes the files; the worker gets a copy). Three synthetic examples stand in until a file is loaded. */
 var ASSETS = {}, REC_MAX_S = 15, IR_MAX_S = 6;
 function setAsset(id, a) {
-  var n = Math.min(a.L.length, Math.round((/^ir:/.test(id) ? IR_MAX_S : REC_MAX_S) * FS));
+  var n = Math.min(a.L.length, Math.round(REC_MAX_S * FS)), k;
   ASSETS[id] = { name: a.name || id, L: a.L.subarray(0, n), R: (a.R || a.L).subarray(0, n) };
+  for (k in READ) if (k.split('|')[1] === id) delete READ[k];
   return ASSETS[id];
 }
 function getAsset(id) {
@@ -1751,14 +1762,18 @@ function getAsset(id) {
   if (EXAMPLES[id]) { var s = EXAMPLES[id].make(); ASSETS[id] = { name: EXAMPLES[id].name, L: s.L, R: s.R }; return ASSETS[id]; }
   return null;
 }
-/* an impulse response as loaded: trailing silence cut, at most IR_MAX_S long, peak 1 */
+/* an impulse response as loaded: silence before the first sound (bar 1 ms) and after the tail cut, at most IR_MAX_S
+   long, peak 1. A recorded clap or knock then starts on time. */
 function prepareIR(L, R) {
   R = R || L;
-  var pk = peakOf(L, R) || 1, thr = pk * 1e-4, n = Math.min(L.length, Math.round(IR_MAX_S * FS)) - 1;
-  while (n > 0 && Math.abs(L[n]) < thr && Math.abs(R[n]) < thr) n--;
-  n = Math.max(1, n + 1);
+  var pk = peakOf(L, R) || 1, s0 = 0, on = pk * 0.02;
+  while (s0 < L.length - 1 && Math.abs(L[s0]) < on && Math.abs(R[s0]) < on) s0++;
+  s0 = Math.max(0, s0 - Math.round(0.001 * FS));
+  var thr = pk * 1e-4, e = Math.min(L.length, s0 + Math.round(IR_MAX_S * FS)) - 1;
+  while (e > s0 && Math.abs(L[e]) < thr && Math.abs(R[e]) < thr) e--;
+  var n = Math.max(1, e - s0 + 1);
   var a = new Float32Array(n), b = new Float32Array(n), fo = Math.min(n >> 2, Math.round(0.01 * FS)), i;
-  for (i = 0; i < n; i++) { a[i] = L[i] / pk; b[i] = R[i] / pk; }
+  for (i = 0; i < n; i++) { a[i] = L[s0 + i] / pk; b[i] = R[s0 + i] / pk; }
   for (i = 0; i < fo; i++) { a[n - 1 - i] *= i / fo; b[n - 1 - i] *= i / fo; }
   return { L: a, R: b };
 }
@@ -1847,10 +1862,65 @@ function makeVoice() {
   toPeak(x, 0.9);
   return { L: x, R: x.slice() };
 }
+function modeRing(buf, n0, f, t60, a) {
+  var w = TAU * f / FS, R = Math.pow(10, -3 / (t60 * FS)), m = Math.min(buf.length - n0, Math.ceil(t60 * 1.3 * FS)), env = a, i;
+  for (i = 0; i < m; i++) { buf[n0 + i] += env * Math.sin(w * i); env *= R; }
+}
+function makeKnock() {
+  /* a knuckle on a metal pot: seven modes with known frequencies and decays (the tests measure them back) */
+  var rnd = rng(81), n = Math.round(2.8 * FS), x = new Float32Array(n), n0 = Math.round(0.15 * FS), i;
+  var F = [311, 742, 1297, 1938, 2716, 3528, 4405], T = [1.6, 1.1, 0.8, 0.55, 0.4, 0.3, 0.22], A = [1, 0.7, 0.55, 0.4, 0.3, 0.2, 0.15];
+  for (i = 0; i < F.length; i++) modeRing(x, n0, F[i], T[i], A[i]);
+  noiseBurst(x, n0 / FS, 0.0015, 1500, 9000, 0.6, rnd, 0.0002);
+  var nz = shapedNoise(n, rnd, 8000, 50); toPeak(nz, 0.0004);
+  for (i = 0; i < n; i++) x[i] += nz[i];
+  toPeak(x, 0.9);
+  return { L: x, R: x.slice() };
+}
+function makeDoor() {
+  /* knuckles on a wooden door, three and four at a time, then the door slams: a body thump and the latch */
+  var rnd = rng(82), n = Math.round(4.2 * FS), x = new Float32Array(n), i;
+  [[0.25, 0.7], [0.5, 0.55], [0.75, 0.62], [1.45, 0.8], [1.68, 0.62], [1.9, 0.72], [2.12, 0.58]].forEach(function (h) {
+    addAt(x, modalHit('wood', h[1] * h[1] * 0.02, 1.6 + 0.2 * rnd(), rnd, { t60Scale: 0.8, noGrains: true }), h[0]);
+  });
+  addAt(x, modalHit('wood', 0.06, 0.5, rnd, { t60Scale: 2.2 }), 3.1);
+  addAt(x, modalHit('steel', 0.004, 4.5, rnd, { maxModes: 4, t60Scale: 0.06, noGrains: true }), 3.104);
+  var nz = shapedNoise(n, rnd, 6000, 60); toPeak(nz, 0.0008 * peakOf(x));
+  for (i = 0; i < n; i++) x[i] += nz[i];
+  toPeak(x, 0.9);
+  return { L: x, R: x.slice() };
+}
+function makeGravel() {
+  /* stones landing on stones: short bright clacks, some with a second bounce, spread across the stereo field */
+  var rnd = rng(83), n = 6 * FS, L = new Float32Array(n), R = new Float32Array(n), i;
+  for (i = 0; i < 70; i++) {
+    var t = 0.1 + 5.7 * rnd(), sc = 1.1 + 3.2 * rnd(), E = 0.0004 * Math.pow(rnd(), 2) + 0.00002, pan = rnd() * 2 - 1, k;
+    var gl = Math.cos((pan + 1) * Math.PI / 4), gr = Math.sin((pan + 1) * Math.PI / 4);
+    for (k = 0; k < (rnd() < 0.4 ? 2 : 1); k++) {
+      var b = modalHit('concrete', E * (k ? 0.25 : 1), sc, rnd, { maxModes: 3, t60Scale: 0.7, noGrains: true }), dt = k ? 0.03 + 0.06 * rnd() : 0;
+      addAt(L, b, t + dt, gl); addAt(R, b, t + dt, gr);
+    }
+  }
+  var pk = peakOf(L, R) || 1; scale(L, 0.9 / pk); scale(R, 0.9 / pk);
+  return { L: L, R: R };
+}
+function makeClap() {
+  /* a hand clap in a concrete stairwell: a 1 ms burst, then the stairwell's dense, bright reverb (about 2.4 s) */
+  var rnd = rng(84), n = Math.round(3.2 * FS), x = new Float32Array(n), i;
+  noiseBurst(x, 0.1, 0.0012, 600, 7000, 1, rnd, 0.0002);
+  var wet = fdn(x, x, { delays: [11, 17, 23, 29, 37, 43, 53, 61], rt60: 2.4, damp: 7000 }), L = new Float32Array(n), R = new Float32Array(n);
+  for (i = 0; i < n; i++) { L[i] = x[i] + 0.6 * wet.L[i]; R[i] = x[i] + 0.6 * wet.R[i]; }
+  var pk = peakOf(L, R) || 1; scale(L, 0.9 / pk); scale(R, 0.9 / pk);
+  return { L: L, R: R };
+}
 var EXAMPLES = {
   'ex:engine': { name: 'Example: engine (synthetic)', make: makeEngine },
   'ex:rain': { name: 'Example: rain (synthetic)', make: makeRain },
-  'ex:voice': { name: 'Example: sung vowels (synthetic)', make: makeVoice }
+  'ex:voice': { name: 'Example: sung vowels (synthetic)', make: makeVoice },
+  'ex:door': { name: 'Example: knocks and a door slam (synthetic)', make: makeDoor },
+  'ex:knock': { name: 'Example: knock on a metal pot (synthetic)', make: makeKnock },
+  'ex:gravel': { name: 'Example: gravel and stones (synthetic)', make: makeGravel },
+  'ex:stair': { name: 'Example: clap in a stairwell (synthetic)', make: makeClap }
 };
 
 /* ---------- the Recording source: placed or flying past, optionally driving a body ---------- */
@@ -1874,14 +1944,14 @@ function recBodyIR(p, rnd) {
     toPeak(buf, 1);
     return { m: buf };
   }
-  if (b === 'ir') { var a = getAsset(p.rcIr); return a ? { L: a.L, R: a.R } : null; }
+  if (b === 'ir') { var a = getIR(p.rcIr); return a ? { L: a.L, R: a.R } : null; }
   return null;
 }
 /* the plan stays light (the body's impulse response is built at render time): what the diagram and readouts need */
 function planRecording(q) {
   var a = getAsset(q.rcAsset), fly = q.rcMode === 'flyby', hs = q.rcHeight, hl = 1.7, b = q.rcBody, k, t0;
   var out = { src: a, name: a ? a.name : '', len: a ? a.L.length / FS : 0, fly: fly, body: b, curves: [] };
-  if (b === 'ir') { var ia = getAsset(q.rcIr); out.irName = ia ? ia.name : ''; out.irLen = ia ? ia.L.length / FS : 0; }
+  if (b === 'ir') { var ia = getAsset(q.rcIr), ii = getIR(q.rcIr); out.irName = ia ? ia.name : ''; out.irLen = ii ? ii.L.length / FS : 0; }
   if (fly) {
     out.v = Math.max(q.rcSpeed, 0.5); out.dur = q.rcPass; out.missD = Math.hypot(q.miss, hs - hl); out.missR = Math.hypot(q.miss, hs + hl);
     var xf = function (t) { return q.D + out.v * (t - out.dur / 2); };
@@ -1962,6 +2032,285 @@ function recordingLayers(pl, p, o, rnd, layers, ev, lab) {
   ev.push({ k: 'launch', t: o.t0 + pl.r / C, label: lab ? 'start' : '' });
 }
 
+/* ---------- your sounds, read for other jobs ----------
+   Every loaded or recorded sound is one asset. The engine reads it as a job needs: as an impulse response, as hits to
+   trigger events from, as the modes of a knocked object, as grains for debris, or as a reference to compare with.
+   Each reading is cached by asset id; an id is never reused for other content. */
+var READ = {};
+function readAsset(kind, id, extra, fn) {
+  var key = kind + '|' + id + '|' + (extra == null ? '' : extra);
+  if (!(key in READ)) { var a = getAsset(id); READ[key] = a ? fn(a) : null; }
+  return READ[key];
+}
+function getIR(id) { return readAsset('ir', id, null, function (a) { return prepareIR(a.L, a.R); }); }
+function monoOf(a) {
+  var n = a.L.length, m = new Float32Array(n), i;
+  for (i = 0; i < n; i++) m[i] = 0.5 * (a.L[i] + a.R[i]);
+  return m;
+}
+
+/* Hits: a rise of the short-term level (2.5 ms frames) by more than a threshold within 20 ms, above a floor below
+   the loudest frame. Sensitivity lowers both. Strength is each hit's peak against the strongest hit. */
+function detectHits(x, sens) {
+  var hop = 120, nf = Math.floor(x.length / hop), db = new Float32Array(nf), i, j, top = -240, out = [];
+  sens = clamp(sens == null ? 0.5 : sens, 0, 1);
+  for (i = 0; i < nf; i++) {
+    var e = 0;
+    for (j = 0; j < hop; j++) { var v = x[i * hop + j]; e += v * v; }
+    db[i] = 10 * Math.log10(e / hop + 1e-14);
+    if (db[i] > top) top = db[i];
+  }
+  var rise = 18 - 12 * sens, floor = top - (24 + 24 * sens), gap = Math.round(0.07 * FS / hop), last = -1e9;
+  for (i = 1; i < nf; i++) {
+    if (db[i] < floor || i - last < gap) continue;
+    var lo = Infinity;
+    for (j = Math.max(0, i - 8); j < i; j++) if (db[j] < lo) lo = db[j];
+    if (db[i] - lo < rise) continue;
+    var s0 = (i - 1) * hop, s1 = Math.min(x.length, s0 + Math.round(0.03 * FS)), lp = 0, k;
+    for (k = s0; k < s1; k++) if (Math.abs(x[k]) > lp) lp = Math.abs(x[k]);
+    for (k = s0; k < s1 && Math.abs(x[k]) < 0.3 * lp; k++);
+    out.push({ t: Math.max(0, k - Math.round(0.0005 * FS)) / FS, a: lp });
+    last = i;
+  }
+  var amax = 0;
+  out.forEach(function (h) { if (h.a > amax) amax = h.a; });
+  return out.map(function (h) { return { t: h.t, s: h.a / (amax || 1) }; });
+}
+function getHits(id, sens) { return readAsset('hits', id, (+sens).toFixed(2), function (a) { return detectHits(monoOf(a), sens); }); }
+
+/* A trigger strength sets the size of the event where the source has one (energy follows the square of the hit's
+   strength, scaled by Hit strength sets size); elsewhere it sets the level. */
+var STRENGTH = {
+  explosion: { keys: [['exW', 1]] }, implosion: { keys: [['imR0', 1 / 3]] }, destruction: { keys: [['dsMass', 1]] },
+  discharge: { keys: [['dcEnergy', 1]] }, blaster: { keys: [['tgEnergy', 1], ['lnEnergy', 1], ['bvChannel', 1], ['bpEnergy', 1]] },
+  field: { keys: [['ffHitE', 1]], gain: true }
+};
+var MAX_TRIGGERS = 32;
+
+/* Modes of a knocked object. The spectrum of the ring (from 4 ms after the knock, as long as it rings) gives the mode
+   frequencies; each mode's level is then tracked frame by frame at its own frequency. A windowed DFT of a decaying
+   sinusoid decays at exactly the sinusoid's rate, so the slope of that track is the mode's decay, unbiased by the
+   window. The track's start, extrapolated to the knock, gives the mode's level. */
+function measureModes(x) {
+  var N = x.length, pk = 0, i, j, k;
+  for (i = 0; i < N; i++) if (Math.abs(x[i]) > pk) pk = Math.abs(x[i]);
+  if (!pk) return null;
+  var i0 = 0;
+  while (i0 < N && Math.abs(x[i0]) < 0.1 * pk) i0++;
+  var a0 = Math.min(N - 1, i0 + Math.round(0.004 * FS)), ehop = 240, env = [], emax = 0;
+  for (i = a0; i + ehop <= N; i += ehop) {
+    var e = 0;
+    for (k = 0; k < ehop; k++) e += x[i + k] * x[i + k];
+    env.push(e); if (e > emax) emax = e;
+  }
+  var ne = env.length;
+  while (ne > 1 && env[ne - 1] < emax * 1e-5) ne--;
+  var NF = 65536, Nw = clamp(ne * ehop, Math.round(0.08 * FS), NF) | 0, re = new Float64Array(NF), im = new Float64Array(NF);
+  for (i = 0; i < Nw && a0 + i < N; i++) re[i] = x[a0 + i] * (0.5 - 0.5 * Math.cos(TAU * (i + 0.5) / Nw));
+  fft(re, im);
+  var half = NF >> 1, mag = new Float64Array(half), mmax = -Infinity;
+  for (k = 0; k < half; k++) { mag[k] = 10 * Math.log10(re[k] * re[k] + im[k] * im[k] + 1e-24); if (mag[k] > mmax) mmax = mag[k]; }
+  var df = FS / NF, lobe = Math.max(2, Math.round(2 * NF / Nw)), cands = [];
+  for (k = Math.max(lobe + 1, Math.ceil(40 / df)); k < Math.min(half - lobe - 1, 16000 / df); k++) {
+    if (mag[k] < mmax - 75) continue;
+    var isMax = true;
+    for (j = 1; j <= lobe && isMax; j++) if (mag[k - j] > mag[k] || mag[k + j] >= mag[k]) isMax = false;
+    if (!isMax) continue;
+    var w = Math.max(2 * lobe, Math.round(0.06 * k)), mL = Infinity, mR = Infinity;
+    for (j = 1; j <= w && k - j >= 0; j++) if (mag[k - j] < mL) mL = mag[k - j];
+    for (j = 1; j <= w && k + j < half; j++) if (mag[k + j] < mR) mR = mag[k + j];
+    if (mag[k] - Math.max(mL, mR) < 6) continue;
+    /* and well above the spectrum around it (its median over +-10 %), so that noise does not pass as a mode */
+    var span = Math.max(8 * lobe, Math.round(0.1 * k)), around = [];
+    for (j = Math.max(1, k - span); j < Math.min(half, k + span); j += Math.max(1, span >> 6)) around.push(mag[j]);
+    around.sort(function (u, v) { return u - v; });
+    if (mag[k] - around[around.length >> 1] < 15) continue;
+    var y1 = mag[k - 1], y2 = mag[k], y3 = mag[k + 1], dn = y1 - 2 * y2 + y3, dl = dn ? 0.5 * (y1 - y3) / dn : 0;
+    cands.push({ f: (k + clamp(dl, -0.5, 0.5)) * df, db: y2 });
+  }
+  cands.sort(function (a, b) { return b.db - a.db; });
+  var modes = [];
+  cands.forEach(function (c) {
+    if (modes.length < 16 && modes.every(function (m) { return Math.abs(m.f - c.f) > 0.025 * Math.min(m.f, c.f) + 3 * df; })) modes.push({ f: c.f });
+  });
+  if (!modes.length) return null;
+  /* decay and level of each mode from its track */
+  var W = 2048, win = new Float32Array(W), wsum = 0, hp = clamp(Math.round(ne * ehop / 200), 120, 1200);
+  for (i = 0; i < W; i++) { win[i] = 0.5 - 0.5 * Math.cos(TAU * (i + 0.5) / W); wsum += win[i]; }
+  var nfr = Math.max(1, Math.floor((Math.min(N, a0 + ne * ehop + FS) - a0 - W) / hp));
+  modes.forEach(function (m) {
+    var w0 = TAU * m.f / FS, cs = new Float32Array(W), sn = new Float32Array(W), tr = new Float64Array(nfr), f, top = -Infinity, ft = 0;
+    for (i = 0; i < W; i++) { cs[i] = Math.cos(w0 * i) * win[i]; sn[i] = Math.sin(w0 * i) * win[i]; }
+    for (f = 0; f < nfr; f++) {
+      var s0 = a0 + f * hp, ar = 0, ai = 0;
+      for (i = 0; i < W && s0 + i < N; i++) { var v = x[s0 + i]; ar += v * cs[i]; ai += v * sn[i]; }
+      tr[f] = 10 * Math.log10(ar * ar + ai * ai + 1e-24);
+      if (tr[f] > top) { top = tr[f]; ft = f; }
+    }
+    var tail = Array.prototype.slice.call(tr, Math.floor(nfr * 0.8)).sort(function (a, b) { return a - b; });
+    var noise = tail.length ? tail[tail.length >> 1] : -240, stop = Math.max(top - 45, noise + 10), f1 = ft;
+    while (f1 + 1 < nfr && tr[f1 + 1] > stop) f1++;
+    var n = f1 - ft + 1, sx = 0, sy = 0, sxx = 0, sxy = 0, slope, icpt;
+    for (f = ft; f <= f1; f++) { var t = (f * hp + W / 2) / FS; sx += t; sy += tr[f]; sxx += t * t; sxy += t * tr[f]; }
+    if (n >= 3) { slope = (n * sxy - sx * sy) / (n * sxx - sx * sx); icpt = (sy - slope * sx) / n; }
+    else { slope = n === 2 ? (tr[f1] - tr[ft]) / ((f1 - ft) * hp / FS) : -60 / (0.5 * W / FS); icpt = top - slope * (ft * hp + W / 2) / FS; }
+    m.t60 = slope < 0 ? clamp(-60 / slope, 0.005, 20) : 20;
+    m.a = 2 * Math.pow(10, icpt / 20) / wsum;
+  });
+  var amax = 0;
+  modes.forEach(function (m) { if (m.a > amax) amax = m.a; });
+  modes = modes.filter(function (m) { m.a /= amax || 1; return m.a > 0.01; }).sort(function (a, b) { return a.f - b.f; }).slice(0, 12);
+  var ring = 0;
+  modes.forEach(function (m) { if (m.t60 > ring) ring = m.t60; });
+  return { modes: modes, f1: modes[0].f, ring: ring };
+}
+function getModes(id) { return readAsset('modes', id, null, function (a) { return measureModes(monoOf(a)); }); }
+/* A measured object as a material for modalHit. The knock is of the whole object (mass M): a piece of mass m rings
+   (M / m)^(1/3) higher, as geometrically similar bodies do, and shorter, as a constant loss factor makes it. */
+function measuredMaterial(mm, M) {
+  return { f0: mm.f1 * Math.cbrt(M / 0.2), f1: mm.f1, ratios: mm.modes.map(function (m) { return m.f / mm.f1; }),
+    t60s: mm.modes.map(function (m) { return m.t60; }), gains: mm.modes.map(function (m) { return m.a; }), t60: mm.ring,
+    slope: 0, contact: 0.00006, eff: 0.8, noise: { dur: 0.003, hp: 1500, lp: 15000, gain: 0.3 }, grains: null };
+}
+function dsMaterial(p) {
+  if (p.dsMat !== 'measured') return p.dsMat;
+  var mm = getModes(p.dsKnock);
+  return mm ? measuredMaterial(mm, p.dsMass) : p.dsLike;
+}
+function matSpec(mat) { return typeof mat === 'string' ? MATERIALS[mat] : mat; }
+
+/* Grains for debris: the hits of a recording, each cut until the next hit (at most 350 ms), ordered from dark to
+   bright. A piece takes a grain by its size (small pieces brighter), re-pitched by its size, at the level its
+   landing energy gives. A recording without clear hits is cut into 150 ms slices. */
+function cutGrains(a) {
+  var x = monoOf(a), hits = detectHits(x, 0.7), g = [], i, j, t;
+  if (hits.length < 3) { hits = []; for (t = 0; t + 0.05 < x.length / FS; t += 0.15) hits.push({ t: t, s: 1 }); }
+  for (i = 0; i < hits.length; i++) {
+    var s0 = Math.round(hits[i].t * FS), s1 = Math.min(x.length, s0 + Math.round(0.35 * FS), i + 1 < hits.length ? Math.round(hits[i + 1].t * FS) - 48 : x.length);
+    if (s1 - s0 < 0.012 * FS) continue;
+    var b = x.slice(s0, s1), pk = peakOf(b);
+    if (!pk) continue;
+    var fo = Math.min(b.length >> 1, Math.round(0.006 * FS));
+    for (j = 0; j < fo; j++) b[b.length - 1 - j] *= j / fo;
+    scale(b, 1 / pk);
+    var zc = 0, m = Math.min(b.length, Math.round(0.04 * FS));
+    for (j = 1; j < m; j++) if ((b[j] >= 0) !== (b[j - 1] >= 0)) zc++;
+    g.push({ b: b, c: zc * FS / (2 * m), s: hits[i].s });
+  }
+  g.sort(function (u, v) { return v.s - u.s; });
+  g = g.slice(0, 64).sort(function (u, v) { return u.c - v.c; });
+  return g.length ? { grains: g } : null;
+}
+function getGrains(id) { return readAsset('grains', id, null, cutGrains); }
+function grainHit(bank, E, sc, scRef, rnd) {
+  var n = bank.grains.length, u = clamp(0.5 + 0.3 * Math.log2(sc / scRef) + 0.3 * (rnd() - 0.5), 0, 1), gr = bank.grains[Math.round(u * (n - 1))];
+  var pr = clamp(Math.pow(sc / scRef, 0.35), 0.6, 1.7) * (0.94 + 0.12 * rnd()), len = Math.max(1, Math.floor((gr.b.length - 1) / pr));
+  var out = new Float32Array(len + 64), amp = 3.4 * Math.sqrt(Math.max(E, 1e-6)), i;
+  for (i = 0; i < len; i++) { var q = i * pr, j = q | 0, f = q - j; out[i] = amp * (gr.b[j] + (gr.b[j + 1] - gr.b[j]) * f); }
+  return out;
+}
+
+/* ---------- comparing with a reference ----------
+   A few measures of a sound that physics sets and that ears notice: the balance across octave bands, the brightness
+   (spectral centroid), how long it decays (from the energy decay curve after the loudest moment) and how fast it
+   rises. Levels are left out: a recording's level is not known. */
+var BAND_HZ = [31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+function features(L, R) {
+  var N = L.length, x = new Float32Array(N), i, k;
+  for (i = 0; i < N; i++) x[i] = 0.5 * (L[i] + (R || L)[i]);
+  var hop = 480, nf = Math.max(1, Math.floor(N / hop)), env = new Float64Array(nf), emax = 0, fmax = 0, fr = hop / FS;
+  for (k = 0; k < nf; k++) {
+    var e = 0;
+    for (i = k * hop; i < (k + 1) * hop && i < N; i++) e += x[i] * x[i];
+    env[k] = e; if (e > emax) { emax = e; fmax = k; }
+  }
+  var a = 0, b = nf - 1, thr = emax * 1e-4;
+  while (a < nf - 1 && env[a] < thr) a++;
+  while (b > a && env[b] < thr) b--;
+  var edc = new Float64Array(nf + 1), t5 = -1, t15 = -1, t25 = -1;
+  for (k = nf - 1; k >= 0; k--) edc[k] = edc[k + 1] + env[k];
+  for (k = fmax; k < nf; k++) {
+    var d = 10 * Math.log10(edc[k] / (edc[fmax] || 1) + 1e-30);
+    if (t5 < 0 && d <= -5) t5 = k;
+    if (t15 < 0 && d <= -15) t15 = k;
+    if (d <= -25) { t25 = k; break; }
+  }
+  if (t5 < 0) t5 = fmax;
+  var decay = Math.max(fr, t25 > 0 ? 3 * (t25 - t5) * fr : t15 > 0 ? 6 * (t15 - t5) * fr : 2 * (b - fmax + 1) * fr);
+  /* rise of the loudest event: 10 % to 90 % of a peak envelope with a 5 ms release, at sample resolution */
+  var pe = 0, rel = Math.exp(-1 / (0.005 * FS)), emx = 0, ipk = 0, en = new Float32Array(N), i10, i90;
+  for (i = 0; i < N; i++) { var ax = Math.abs(x[i]); pe = ax > pe ? ax : pe * rel; en[i] = pe; if (pe > emx) { emx = pe; ipk = i; } }
+  i10 = ipk;
+  while (i10 > 0 && en[i10 - 1] >= 0.1 * emx) i10--;
+  i90 = i10;
+  while (i90 < ipk && en[i90] < 0.9 * emx) i90++;
+  /* averaged spectrum of the active part */
+  var W = 4096, S = new Float64Array(W / 2), re = new Float64Array(W), im = new Float64Array(W), win = new Float64Array(W);
+  for (i = 0; i < W; i++) win[i] = 0.5 - 0.5 * Math.cos(TAU * (i + 0.5) / W);
+  var s0 = a * hop, s1 = Math.min(N, (b + 1) * hop), segs = Math.max(1, Math.floor((s1 - s0 - W) / (W / 2)) + 1), step = segs > 120 ? (segs - 1) / 119 : 1, cnt = Math.min(segs, 120);
+  for (k = 0; k < cnt; k++) {
+    var st = s0 + Math.round(k * step) * (W / 2);
+    re.fill(0); im.fill(0);
+    for (i = 0; i < W && st + i < N; i++) re[i] = x[st + i] * win[i];
+    fft(re, im);
+    for (i = 1; i < W / 2; i++) S[i] += re[i] * re[i] + im[i] * im[i];
+  }
+  var tot = 0, cs = 0, bands = BAND_HZ.map(function () { return 0; });
+  for (i = 1; i < W / 2; i++) {
+    var f = i * FS / W;
+    if (f < 20 || f > 20000) continue;
+    tot += S[i]; cs += S[i] * f;
+    for (k = 0; k < BAND_HZ.length; k++) if (f >= BAND_HZ[k] / Math.SQRT2 && f < BAND_HZ[k] * Math.SQRT2) { bands[k] += S[i]; break; }
+  }
+  return { bands: bands.map(function (v) { return 10 * Math.log10(v / (tot || 1) + 1e-12); }), cent: tot ? cs / tot : 1000,
+    decay: decay, attack: (i90 - i10) / FS, len: (b - a + 1) * fr };
+}
+/* how far apart two sounds are, in rough dB-like units: 0 is a match */
+function distance(f, r) {
+  var s = 0, n = 0, k;
+  for (k = 0; k < f.bands.length; k++) {
+    if (f.bands[k] < -45 && r.bands[k] < -45) continue;
+    s += Math.min(30, Math.abs(Math.max(f.bands[k], -60) - Math.max(r.bands[k], -60))); n++;
+  }
+  return (n ? s / n : 0) + 10 * Math.abs(Math.log2(f.decay / r.decay)) + 8 * Math.abs(Math.log2(f.cent / r.cent)) +
+    3 * Math.abs(Math.log2((f.attack + 0.003) / (r.attack + 0.003)));
+}
+function matchScore(d) { return Math.round(100 * Math.exp(-d / 15)); }
+/* slider position (0..1) to value, as the page's sliders map it */
+function posToVal(s, u) {
+  var v = s.scale === 'log' ? s.min * Math.pow(s.max / s.min, u) : s.scale === 'pow' ? s.max * u * u * u : s.min + u * (s.max - s.min);
+  return s.round ? Math.round(v / s.round) * s.round : v;
+}
+/* Fit one parameter to the reference: a coarse sweep over the slider, then a golden-section search around the best.
+   Every try renders the Physics version from the same seed. */
+var FIT_TRIES = 24;
+function fitParam(d, post) {
+  var ref = getAsset(d.ref);
+  if (!ref) return { id: d.id, kind: 'fit', error: 'no reference' };
+  var rf = features(ref.L, ref.R), tried = [], best = null, G = 16, i;
+  function ev(u) {
+    u = clamp(u, 0, 1);
+    var q = merge(d.p, {}), v = posToVal(d.spec, u), r, dd;
+    q[d.key] = v; r = renderRaw(q, d.seed); dd = distance(features(r.L, r.R), rf);
+    tried.push([u, dd]);
+    if (!best || dd < best.d) best = { u: u, v: v, d: dd };
+    if (post) post({ kind: 'fitProgress', id: d.id, n: tried.length, of: FIT_TRIES });
+    return dd;
+  }
+  var r0 = renderRaw(d.p, d.seed), before = distance(features(r0.L, r0.R), rf), gd = [];
+  for (i = 0; i <= G; i++) gd.push(ev(i / G));
+  var bi = 0;
+  for (i = 1; i <= G; i++) if (gd[i] < gd[bi]) bi = i;
+  var lo = Math.max(0, (bi - 1) / G), hi = Math.min(1, (bi + 1) / G), gr = (Math.sqrt(5) - 1) / 2;
+  var c = hi - gr * (hi - lo), e = lo + gr * (hi - lo), fc = ev(c), fe = ev(e);
+  for (i = 0; i < FIT_TRIES - G - 3; i++) {
+    if (fc < fe) { hi = e; e = c; fe = fc; c = hi - gr * (hi - lo); fc = ev(c); }
+    else { lo = c; c = e; fc = fe; e = lo + gr * (hi - lo); fe = ev(e); }
+  }
+  if (before <= best.d) best = { u: null, v: d.p[d.key], d: before };
+  return { id: d.id, kind: 'fit', key: d.key, value: best.v, dist: best.d, before: before, tried: tried.sort(function (a, b) { return a[0] - b[0]; }) };
+}
+
 /* ---------- impulse responses to save ---------- */
 function bodyIR(p, seed) {
   var ir = recBodyIR(p, rng(seed || 1));
@@ -1985,10 +2334,11 @@ function isLoop(p) { return (p.kind === 'rocket' && p.rkMode === 'static') || (p
    instead of zero: the code then takes exactly the same branches and random draws as the full mix, so the stems add
    up to the mix sample for sample. Every gain enters the mix linearly, which is what makes this hold. */
 var STEM_EPS = 1e-20;
+function triggered(p) { return p.seqFrom === 'rec' && !isLoop(p); }
 function sceneGains(p, only) {
-  var g = [trimGain(p.trimCrack), trimGain(p.trimLaunch), trimGain(p.trimWake), trimGain(p.trimImpact)];
+  var g = [trimGain(p.trimCrack), trimGain(p.trimLaunch), trimGain(p.trimWake), trimGain(p.trimImpact), triggered(p) ? trimGain(p.seqGuide) : 0];
   if (only != null) g = g.map(function (v, k) { return k === only || v === 0 ? v : STEM_EPS; });
-  return { g1: g[0], g2: g[1], g3: g[2], g4: g[3] };
+  return { g1: g[0], g2: g[1], g3: g[2], g4: g[3], g5: g[4] };
 }
 function renderLoop(p, seed, only, ext) {
   var pl = planRep(p, seed, 0), rnd = rng(seed + 5), Np = LOOP_S * FS, i, sig, r;
@@ -1999,7 +2349,7 @@ function renderLoop(p, seed, only, ext) {
   var L = new Float32Array(Np), R = new Float32Array(Np);
   for (i = 0; i < Np; i++) { L[i] = (sig.mid[i] + sig.side[i]) / r; R[i] = (sig.mid[i] - sig.side[i]) / r; }
   L = periodicApply(L, function (b) { postLayer(b, r, p.ground); }); R = periodicApply(R, function (b) { postLayer(b, r, p.ground); });
-  var peakPa = peakOf(L, R), env = ENVS[p.env] || ENVS.none, irA = env.ir ? getAsset(p.irAsset) : null, tL, tR, wet, wg;
+  var peakPa = peakOf(L, R), env = ENVS[p.env] || ENVS.none, irA = env.ir ? getIR(p.irAsset) : null, tL, tR, wet, wg;
   if (irA) {
     /* an imported room: three periods through it, the last one kept, so the reverb wraps round the seam */
     tL = tile3(L); tR = tile3(R); wet = fftConvolve(tL, tR, irA.L, irA.R); wg = dbToLin(p.irWet);
@@ -2015,10 +2365,16 @@ function renderLoop(p, seed, only, ext) {
 }
 
 /* ---------- scene assembly: one plan per repetition, then a common mix ---------- */
-function planRep(p, seed, k) {
-  var grnd = rng(seed * 31 + k * 7919 + 17), q = p, j = p.seqJitter || 0, pan = 0, kind = p.kind || 'projectile', out;
+function planRep(p, seed, k, s) {
+  var grnd = rng(seed * 31 + k * 7919 + 17), q = p, j = p.seqJitter || 0, pan = 0, kind = p.kind || 'projectile', out, gf = 1;
+  if ((k > 0 && j > 0) || s != null) q = merge(p, {});
+  if (s != null) {
+    /* triggered from a recording: the hit's strength sets the size of the event, or its level */
+    var sd = clamp(p.seqDyn, 0, 1), ss = Math.max(s, 0.05), fE = Math.pow(ss, 2 * sd), sk = STRENGTH[kind];
+    if (sk) sk.keys.forEach(function (kv) { q[kv[0]] = q[kv[0]] * Math.pow(fE, kv[1]); });
+    if (!sk || sk.gain) gf = Math.pow(ss, sd);
+  }
   if (k > 0 && j > 0) {
-    q = merge(p, {});
     var a = 1 + j * 0.7 * (grnd() - 0.5);
     if (kind === 'explosion') q.exDist = p.exDist * a; else if (kind === 'destruction') q.dsDist = p.dsDist * a;
     else if (kind === 'implosion') q.imDist = p.imDist * a; else if (kind === 'discharge') q.dcDist = p.dcDist * a;
@@ -2028,7 +2384,7 @@ function planRep(p, seed, k) {
   }
   if (kind === 'explosion') out = { ex: planExplosion(q.exW, q.exDist, Math.round(q.exFrags), Math.round(q.exDebris), grnd) };
   else if (kind === 'implosion') out = { im: planImplosion(q) };
-  else if (kind === 'destruction') out = { ds: planDestruction({ mat: q.dsMat, mass: q.dsMass, height: q.dsHeight, pieces: q.dsPieces, dist: q.dsDist, spread: q.dsSpread }, grnd) };
+  else if (kind === 'destruction') out = { ds: planDestruction({ mat: q.dsMat === 'measured' ? q.dsLike : q.dsMat, mass: q.dsMass, height: q.dsHeight, pieces: q.dsPieces, dist: q.dsDist, spread: q.dsSpread }, grnd) };
   else if (kind === 'rocket') out = planRocket(q, grnd);
   else if (kind === 'rotor') out = { rt: planRotor(q, grnd) };
   else if (kind === 'discharge') out = { dc: planDischarge(q, grnd) };
@@ -2039,7 +2395,7 @@ function planRep(p, seed, k) {
     out = analyzeProj(q); out.pay = null;
     if (out.hit && q.payload >= 0.01) out.pay = planExplosion(q.payload, out.hit.r, Math.round(q.exFrags), Math.round(q.exDebris), grnd);
   }
-  out.kind = kind; out.q = q; out.pan = pan;
+  out.kind = kind; out.q = q; out.pan = pan; out.gf = gf;
   return out;
 }
 function analyze(p, seed) { return planRep(p, seed || 1, 0); }
@@ -2059,8 +2415,8 @@ function renderRaw(p, seed) {
 function renderStems(p, seed) {
   var loop = isLoop(p), full = loop ? renderLoop(p, seed, null, true) : mixScene(p, seed, null), pk = peakOf(full.L, full.R) || 1, n = 0, out = [], k;
   if (!loop) { scale(full.L, 1 / pk); scale(full.R, 1 / pk); n = trimTail(full.L, full.R)[0].length; }
-  var gs = sceneGains(p, null), on = [gs.g1, gs.g2, gs.g3, gs.g4];
-  for (k = 0; k < 4; k++) {
+  var gs = sceneGains(p, null), on = [gs.g1, gs.g2, gs.g3, gs.g4, gs.g5];
+  for (k = 0; k < 5; k++) {
     if (!on[k]) { out.push(null); continue; }
     var sc = loop ? renderLoop(p, seed, k, true) : mixScene(p, seed, k), L = sc.L, R = sc.R;
     scale(L, 1 / pk); scale(R, 1 / pk);
@@ -2071,11 +2427,14 @@ function renderStems(p, seed) {
 }
 /* every layer of every repeat, mixed in place and through the room; not yet normalised */
 function mixScene(p, seed, only) {
-  var layers = [], ev = [], count = clamp(Math.round(p.seqCount || 1), 1, 16), tOff = 0, k, trnd = rng(seed ^ 0x51ed);
+  var layers = [], ev = [], trig = triggered(p) ? (getHits(p.seqAsset, p.seqSens) || []).slice(0, MAX_TRIGGERS) : null;
+  var count = trig ? trig.length : clamp(Math.round(p.seqCount || 1), 1, 16), tOff = 0, k, trnd = rng(seed ^ 0x51ed);
   for (k = 0; k < count; k++) {
-    var pl = planRep(p, seed, k), rnd = rng(seed + k * 104729), q = pl.q, lab = k === 0;
+    if (trig) tOff = trig[k].t;
+    var pl = planRep(p, seed, k, trig ? trig[k].s : null), rnd = rng(seed + k * 104729), q = pl.q, lab = k === 0;
     var o = sceneGains(q, only); o.t0 = tOff; o.pan = pl.pan; o.ground = q.ground;
-    if (pl.kind === 'explosion') explosionLayers(pl.ex, { W: q.exW, r: q.exDist, surface: q.exSurface, t0: tOff, pan: pl.pan, ground: q.ground,
+    o.g1 *= pl.gf; o.g2 *= pl.gf; o.g3 *= pl.gf; o.g4 *= pl.gf;
+    if (pl.kind === 'explosion') explosionLayers(pl.ex, { W: q.exW, r: q.exDist, surface: q.exSurface, grains: q.exSurface === 'rec' ? getGrains(q.grAsset) : null, t0: tOff, pan: pl.pan, ground: q.ground,
       gBlast: o.g1, gRumble: o.g2, gFrag: o.g3, gDebris: o.g4 }, rnd, layers, ev, lab);
     else if (pl.kind === 'implosion') implosionLayers(pl.im, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'destruction') destructionLayers(pl.ds, q, o, rnd, layers, ev, lab);
@@ -2086,13 +2445,16 @@ function mixScene(p, seed, only) {
     else if (pl.kind === 'field') fieldLayers(pl.ff, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'recording') recordingLayers(pl.rc, q, o, rnd, layers, ev, lab);
     else projLayers(pl, q, o, rnd, layers, ev, lab);
-    tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
+    if (!trig) tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
   }
+  /* the recording that triggers the events, at its own time, in its own group */
+  var gG = sceneGains(p, only).g5, ga = trig && gG > 0 ? getAsset(p.seqAsset) : null;
+  if (ga) { layers.push({ L: ga.L, R: ga.R, t: 0, g: gG }); ev.push({ k: 'pass', t: 0, label: 'trigger' }); }
   var tStart = Infinity, tEnd = 0;
   layers.forEach(function (l) { var n = (l.m || l.L).length; if (l.t < tStart) tStart = l.t; if (l.t + n / FS > tEnd) tEnd = l.t + n / FS; });
   if (!layers.length) { tStart = 0; tEnd = 0.2; }
   tStart -= 0.03;
-  var env = ENVS[p.env] || ENVS.none, irA = env.ir ? getAsset(p.irAsset) : null;
+  var env = ENVS[p.env] || ENVS.none, irA = env.ir ? getIR(p.irAsset) : null;
   var durS = Math.min(24, tEnd - tStart + (irA ? irA.L.length / FS + 0.05 : env.rt60 ? env.rt60 * 0.9 + 0.2 : 0.05));
   var N = Math.ceil(durS * FS), L = new Float32Array(N), R = new Float32Array(N);
   layers.forEach(function (l) {
@@ -2348,11 +2710,12 @@ var DEFAULTS = { kind: 'projectile',
   lnType: 'line', lnLength: 4, lnStages: 8, lnCharge: 0, lnChargeHz: 7000, lnRingHz: 180, lnEnergy: 20000, lnChamber: 30, lnSpring: 0.6,
   bvType: 'none', bvSpeed: 300, bvChannel: 40, bvPulses: 1, bvRate: 40, bvSizzle: 0.6, bvTone: 900, bvCal: 20,
   tgMat: 'none', tgEnergy: 2000, tgThick: 5, tgSize: 1.5, tgHeat: 0.5,
-  rcAsset: 'ex:engine', rcMode: 'place', rcDist: 5, rcSpeed: 25, rcPass: 8, rcHeight: 0.6, rcBody: 'none', rcThick: 1, rcSize: 2, rcLength: 4, rcIr: '',
-  irAsset: '', irWet: -6,
+  rcAsset: 'ex:engine', rcMode: 'place', rcDist: 5, rcSpeed: 25, rcPass: 8, rcHeight: 0.6, rcBody: 'none', rcThick: 1, rcSize: 2, rcLength: 4, rcIr: 'ex:knock',
+  irAsset: 'ex:stair', irWet: -6,
   ffMode: 'hum', ffBase: 62, ffType: 'membrane', ffBeat: 1.5, ffShimmer: 0.5, ffCorona: 0.4, ffHitE: 2000, ffGlide: 0.6, ffDist: 3,
   ffB: 1, ffDens: 1e19, ffBeta: 0.3, ffAngle: 30, ffSaw: 0.4, ffSawT: 1.33, ffChorus: 0.4, ffSurface: 0.4, ffSoliton: 0.4,
-  seqCount: 1, seqInterval: 0.12, seqJitter: 0.2,
+  seqCount: 1, seqInterval: 0.12, seqJitter: 0.2, seqFrom: 'interval', seqAsset: 'ex:door', seqSens: 0.5, seqDyn: 0.7, seqGuide: -40,
+  dsKnock: 'ex:knock', dsLike: 'glass', dsDebris: 'model', grAsset: 'ex:gravel',
   env: 'field', ground: 0.5, trimCrack: 0, trimLaunch: 0, trimWake: 0, trimImpact: 0 };
 var PRESETS = [
   { id: 'rifle', name: 'Rifle, downrange', p: { trimLaunch: 12 } },
@@ -2370,6 +2733,7 @@ var PRESETS = [
   { id: 'charge', name: 'Charge, close', p: { kind: 'explosion', exW: 0.5, exDist: 25, exFrags: 6, exDebris: 45, exSurface: 'concrete', env: 'urban' } },
   { id: 'fragstorm', name: 'Fragment storm', p: { kind: 'explosion', exW: 1.5, exDist: 18, exFrags: 14, exDebris: 70, exSurface: 'steel', env: 'urban', trimWake: 4 } },
   { id: 'bigblast', name: 'Large blast, far', p: { kind: 'explosion', exW: 400, exDist: 900, exFrags: 0, exDebris: 0, env: 'valley', trimLaunch: 6 } },
+  { id: 'gravelblast', name: 'Charge, gravel debris', p: { kind: 'explosion', exW: 0.5, exDist: 25, exFrags: 3, exDebris: 60, exSurface: 'rec', grAsset: 'ex:gravel', env: 'field' } },
   { id: 'barrage', name: 'Barrage', p: { kind: 'explosion', exW: 8, exDist: 350, exFrags: 0, exDebris: 12, exSurface: 'dirt', env: 'field', seqCount: 6, seqInterval: 0.45, seqJitter: 0.9 } },
 
   { id: 'tube', name: 'Vacuum tube', p: { kind: 'implosion', imR0: 0.12, imDp: 1, imGas: 0.03, imMedium: 'air', imShell: 'glass', imGroan: 0.5, imDist: 2, env: 'indoor' } },
@@ -2380,6 +2744,10 @@ var PRESETS = [
   { id: 'window', name: 'Window pane', p: { kind: 'destruction', dsMat: 'glass', dsMass: 6, dsHeight: 1.6, dsPieces: 70, dsGroan: 0.4, dsDist: 2.5, dsSpread: 1.2, env: 'indoor', trimWake: 8 } },
   { id: 'crate', name: 'Wooden crate', p: { kind: 'destruction', dsMat: 'wood', dsMass: 25, dsHeight: 1.2, dsPieces: 18, dsGroan: 0.5, dsDist: 3, dsSpread: 1, env: 'indoor' } },
   { id: 'wall', name: 'Concrete wall', p: { kind: 'destruction', dsMat: 'concrete', dsMass: 3000, dsHeight: 3, dsPieces: 90, dsGroan: 1.2, dsDist: 12, dsSpread: 5, env: 'urban' } },
+  { id: 'potshatter', name: 'Measured pot, shattered', p: { kind: 'destruction', dsMat: 'measured', dsKnock: 'ex:knock', dsLike: 'glass', dsMass: 3, dsHeight: 1.2, dsPieces: 30, dsDist: 2.5, dsSpread: 1, env: 'indoor', trimWake: 6 } },
+  { id: 'potdrop', name: 'Measured pot, dropped', p: { kind: 'destruction', dsMat: 'measured', dsKnock: 'ex:knock', dsLike: 'steel', dsMass: 3, dsHeight: 1.2, dsPieces: 3, dsDist: 2.5, dsSpread: 0.6, env: 'indoor' } },
+  { id: 'knockglass', name: 'Knocks shatter glass', p: { kind: 'destruction', dsMat: 'glass', dsMass: 1.5, dsHeight: 1.2, dsPieces: 25, dsDist: 3, dsSpread: 1, seqFrom: 'rec', seqAsset: 'ex:door', seqDyn: 0.9, seqGuide: -6, env: 'indoor' } },
+  { id: 'wallgravel', name: 'Wall onto gravel', p: { kind: 'destruction', dsMat: 'concrete', dsMass: 3000, dsHeight: 3, dsPieces: 90, dsGroan: 1.2, dsDist: 12, dsSpread: 5, dsDebris: 'rec', grAsset: 'ex:gravel', env: 'urban' } },
   { id: 'gantry', name: 'Steel gantry', p: { kind: 'destruction', dsMat: 'steel', dsMass: 1500, dsHeight: 8, dsPieces: 24, dsGroan: 2.5, dsDist: 20, dsSpread: 6, env: 'urban' } },
 
   { id: 'launcher', name: 'Launcher, at the shooter', p: { kind: 'rocket', rkMode: 'launch', D: 0, miss: 1.5, target: 'concrete', targetDist: 180, payload: 0.7, exFrags: 0, exDebris: 30, env: 'field' } },
@@ -2421,6 +2789,7 @@ var PRESETS = [
   { id: 'nailgun', name: 'Nail gun', p: { kind: 'blaster', lnType: 'gas', lnLength: 0.12, lnChamber: 40, lnSpring: 0.6, lnEnergy: 120, bvType: 'slug', bvSpeed: 40, bvCal: 3, D: 0, miss: 0.6, tgMat: 'wood', tgThick: 20, tgSize: 0.5, targetDist: 0.1, tgHeat: 0, env: 'indoor' } },
   { id: 'thundersheet', name: 'Thunder sheet', p: { kind: 'blaster', lnType: 'none', D: 0, miss: 2, tgMat: 'steel', tgThick: 0.8, tgSize: 2, targetDist: 0, tgEnergy: 30, tgHeat: 0, env: 'indoor' } },
   { id: 'icesheet', name: 'Ice sheet strike', p: { kind: 'blaster', lnType: 'none', D: 0, miss: 6, tgMat: 'ice', tgThick: 60, tgSize: 60, targetDist: 0, tgEnergy: 400, tgHeat: 0.6, env: 'valley' } },
+  { id: 'knockfire', name: 'Knocks fire the blaster', p: { kind: 'blaster', D: 0, miss: 3, seqFrom: 'rec', seqAsset: 'ex:door', seqDyn: 0.8, env: 'indoor' } },
   { id: 'boltwater', name: 'Bolt into water', p: { kind: 'blaster', lnType: 'line', bvType: 'bolt', bvSpeed: 250, bvChannel: 50, D: 0, miss: 1, tgMat: 'water', targetDist: 20, tgEnergy: 6000, tgHeat: 0.7, env: 'field' } },
 
   { id: 'shield', name: 'Shield hum, loop', p: { kind: 'field', env: 'indoor' } },
@@ -2451,8 +2820,9 @@ var ACTION_PRESETS = [
   { id: 'far', name: 'Distant battle', a: { punch: 0.1, weight: 0.5, drive: 0.15, tail: 0.6, width: 0.5, loud: 0.4 } }
 ];
 var jobCache = { key: '', raw: null };
-function job(d) {
+function job(d, post) {
   if (d.asset) { setAsset(d.id, d); return null; }
+  if (d.fit) return fitParam(d, post);
   var t = Date.now(), k = JSON.stringify(d.p) + '|' + d.seed;
   if (d.stems) return { id: d.id, kind: 'stems', stems: renderStems(d.p, d.seed), ms: Date.now() - t };
   if (jobCache.key !== k) { jobCache.raw = renderRaw(d.p, d.seed); jobCache.key = k; }
@@ -2461,7 +2831,8 @@ function job(d) {
 }
 function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for (k in over) o[k] = over[k]; return o; }
 
-root.BFX = { setAsset: setAsset, getAsset: getAsset, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
+root.BFX = { setAsset: setAsset, getAsset: getAsset, getIR: getIR, detectHits: detectHits, getHits: getHits, measureModes: measureModes, getModes: getModes,
+  getGrains: getGrains, features: features, distance: distance, matchScore: matchScore, posToVal: posToVal, monoOf: monoOf, BAND_HZ: BAND_HZ, MAX_TRIGGERS: MAX_TRIGGERS, FIT_TRIES: FIT_TRIES, triggered: triggered, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
   EXAMPLES: EXAMPLES, REC_MAX_S: REC_MAX_S, IR_MAX_S: IR_MAX_S, renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
   encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
   ACTION_DEFAULTS: ACTION_DEFAULTS, ACTION_PRESETS: ACTION_PRESETS, merge: merge, _wake: wakeLayer, _modal: modalHit, rng: rng };

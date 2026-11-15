@@ -41,20 +41,50 @@ Any event can repeat on a timeline (bursts, salvos, swarms), and every Fire is a
   with collapsing steam bubbles. Afterwards the hot spot sizzles and the body ticks as it cools; ice cracks instead, and
   each crack sings along the sheet.
 
-### Recordings and impulse responses
+### Your sounds
 
-- **Load a recording** (Recording source) places any WAV, AIFF, FLAC, MP3 or OGG in the scene; the first 15 s are used.
-  It can stand at a distance or fly past on a path, with the Doppler shift and the comb notch of its ground reflection
-  following the geometry. Through a body, every path from the source arrives as its own falling sweep, so rain on a
-  steel sheet or a voice down a long spring keeps the timing of the real thing. The built-in examples (engine, rain,
-  sung vowels) are synthetic, so the presets work before you load anything.
-- **Load a body IR** turns a recorded knock or tap on an object into the body the recording drives.
-- **Load a room IR** (Scene panel) uses a recorded space as the environment for every source, loops included.
+Wherever a sound is asked for, there is a menu of your sounds and the built-in examples, with **Load a file** and
+**Record** next to it. Files can be WAV, AIFF, FLAC, MP3, M4A or OGG; the first 15 s are used. The examples are
+synthetic, so every preset plays before you load anything.
+
+- **Recording source.** Places a sound in the scene, standing at a distance or flying past on a path, with the Doppler
+  shift and the comb notch of its ground reflection following the geometry. It can drive a body: plates (steel,
+  aluminium, glass, ice, wood), a rail, a spring, the dispersive line, or a recorded object (a knock or tap on it).
+  Through a dispersive body every path arrives as its own falling sweep, so rain on a steel sheet or a voice down a
+  long spring keeps the timing of the real thing.
+- **Recorded room** (Scene panel). A clap, a balloon pop or a measured impulse response becomes the environment for
+  every source, loops included.
+- **Hits of a recording** (Sequence panel). Every hit in a recording, knocks on a door for example, starts one event.
+  A hit's strength sets the event's size where the source has one (charge, mass, energy) and its level elsewhere. The
+  recording itself can play in the mix and comes out as its own stem.
+- **Measured object** (Destruction). The modes of a recorded knock (frequency, decay and level of each) are measured
+  and the object breaks with them: a piece of mass m rings (M/m)^(1/3) higher than the whole object, and shorter.
+  *Breaks like* sets how it fractures.
+- **Grains of a recording** (Explosion debris, Destruction landings). A recording is cut at its hits into grains; each
+  landing piece takes a grain by its size, re-pitched by its size, at the level its landing energy gives. The timing
+  stays physical.
+- **Reference** panel. Compare the Physics version with a recording of the real thing: octave-band balance,
+  brightness, decay, rise and length. *Fit to the reference* tries 24 values of one setting (a coarse sweep, then a
+  golden-section search) and keeps the one that comes closest; Undo puts it back.
 - **Save body IR** and **Save room IR** write the physical models as 32-bit float impulse responses, for any
   convolution reverb in a DAW or a game engine.
 
-Loaded files stay in the page until it is reloaded. They are decoded and resampled to 48 kHz by your browser and never
-leave your computer.
+Sounds stay in the page until it is reloaded. They are decoded and resampled to 48 kHz by your browser and never leave
+your computer.
+
+### Recording, on a phone or elsewhere
+
+**Record** asks the browser to switch its voice processing off (echo cancellation, noise suppression, automatic
+gain). It waits for the sound to start, keeping 0.15 s before it, so the tap on the screen is not in the take. Knocks,
+claps and rooms stop by themselves once the ring has died away; anything else stops on Stop or after 15 s. Recording
+needs the site (https) or a local server, and the browser's permission; the offline file can record in Chrome, and
+inside the Claude viewer it cannot, so record with another app there and load the file.
+
+Phone browsers do not always honour the request to switch processing off, iPhone browsers least of all. For the best
+takes on an iPhone, record in Voice Memos with Settings, Voice Memos, Audio Quality set to Lossless, save the memo to
+Files, and load it. On any phone: hold it still or stand it on something, mic end toward the sound (about 20 to 30 cm
+from a small object), switch notifications off, keep peaks short of clipping, and leave a second of quiet after a
+knock so its ring is all there.
 
 ## Action filters
 
@@ -66,7 +96,7 @@ Physics and Action switch plays the same take with and without them.
 
 - **Save WAV** saves the version you are playing as a 24-bit, 48 kHz stereo WAV. Hover and burn loops save one seamless period.
 - **With stems** adds the four layer groups of the Layer levels panel (for a blaster: launcher, bolt, impact, aftermath)
-  as separate files. Stems are the Physics version, before the action filters, and add up to it sample for sample.
+  as separate files, and a fifth for a recording whose hits trigger the events, when it is in the mix. Stems are the Physics version, before the action filters, and add up to it sample for sample.
   Saved, they come in one zip with the mix; stems are 32-bit float so that nothing clips.
 - **Send to SFX Workbench** (on the site) opens SFX Workbench in another tab, or uses the one it opened before, and hands
   it the sound as a 32-bit float WAV. It lands in a "Ballistic Foley Lab" group in the library. Sent with stems, they go

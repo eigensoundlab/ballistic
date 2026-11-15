@@ -34,14 +34,21 @@ later move into [SFX Workbench](https://github.com/eigensoundlab/SFXWorkbench), 
 9. **Commits:** author `Daniel Sandner <134306627+sandner-art@users.noreply.github.com>`. No AI attribution in commit
    messages or pull request descriptions: no `Co-Authored-By` trailers, no session links, no "generated with" lines.
 
-## Recordings and impulse responses
+## Your sounds
 
-Recordings and impulse responses are assets, not parameters: `setAsset(id, { name, L, R })` in `src/engine.js` stores
-them (ids `rec:<n>` for recordings, `ir:<n>` for impulse responses; `ex:` ids are the built-in synthetic examples), and
-parameters only name them (`rcAsset`, `rcIr`, `irAsset`). The page hands each one to the worker once with
-`job({ asset: true, id, name, L, R })`, which answers nothing. Assets last until the page reloads; `start()` in
-`src/app.js` falls back to the examples and built-in rooms when a saved state names one that is gone. Convolution goes
-through `fftConvolve`; the tests check it against the direct sum.
+Loaded and recorded sounds are assets, not parameters: `setAsset(id, { name, L, R })` in `src/engine.js` stores them
+(ids `rec:<n>`; `ex:` ids are the built-in synthetic examples), and parameters only name them (`rcAsset`, `rcIr`,
+`irAsset`, `seqAsset`, `dsKnock`, `grAsset`). The engine reads an asset as a job needs and caches each reading by id:
+`getIR` (trimmed, peak 1), `getHits` (hits and strengths), `getModes` (measured modes), `getGrains`; `setAsset`
+clears them. The page hands each sound to the worker once with `job({ asset: true, ... })`, which answers nothing, and
+again to any new worker. Sounds last until the page reloads; `start()` in `src/app.js` falls back to the examples
+when a saved state names one that is gone. Convolution goes through `fftConvolve`; the tests check it against the
+direct sum.
+
+Hits from a recording start events in `mixScene` (at most `MAX_TRIGGERS`); `STRENGTH` lists which parameters a hit's
+strength scales per source type. The triggering recording is a fifth layer group (`g5` in `sceneGains`, its own
+stem), so the stems still add up. A fit is `job({ fit: true, ... }, post)`: it renders `FIT_TRIES` values of one
+parameter and calls `post` with progress, which the worker forwards to the page.
 
 ## Sending to SFX Workbench
 

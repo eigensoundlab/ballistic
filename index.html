@@ -71,6 +71,15 @@ canvas { display: block; width: 100%; background: var(--well); }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn:disabled:hover { background: transparent; color: var(--ink); }
 .toolrow { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn.live { background: var(--tracer); border-color: var(--tracer); color: #fff; }
+.btn.live:hover { background: var(--tracer); color: #fff; }
+:root[data-theme="dark"] .btn.live { color: #160703; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.live { color: #160703; } }
+.fitrow { align-items: center; }
+.fitrow label { font-size: 13px; font-weight: 500; }
+.fitrow select { flex: 1 1 120px; min-width: 0; font: 500 13px/1.2 var(--font-body); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; }
+#refPlot { height: 130px; border: 1px solid var(--line); border-radius: 4px; }
+#fitNote .btn { margin-left: 4px; }
 
 .banks { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; align-items: start; }
 .bank { margin: 0; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
@@ -151,11 +160,15 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
     <fieldset class="bank" id="bank-scene"><legend>Scene</legend></fieldset>
     <fieldset class="bank" id="bank-seq">
       <legend>Sequence</legend>
-      <p class="note">Repeats the event on a timeline: bursts, salvos, swarms. Each repeat is a fresh take. Loops ignore it.</p>
+      <p class="note">Repeats the event on a timeline (bursts, salvos, swarms), or starts one at every hit of a recording. Each repeat is a fresh take. Loops ignore it.</p>
     </fieldset>
     <fieldset class="bank" id="bank-mix">
       <legend>Layer levels</legend>
       <p class="note" id="mixNote">0 dB keeps the physical balance between layers.</p>
+    </fieldset>
+    <fieldset class="bank" id="bank-ref">
+      <legend>Reference</legend>
+      <p class="note">Compare the Physics version with a recording of the real thing, then let one setting fit itself to it. Levels are left out: a recording's level is not known.</p>
     </fieldset>
   </div>
 

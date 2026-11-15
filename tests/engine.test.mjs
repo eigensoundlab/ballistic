@@ -123,10 +123,10 @@ test('stems add up to the Physics version, one preset of each source type and ev
   const byKind = {};
   for (const pr of B.PRESETS) { const k = pr.p.kind || 'projectile'; if (!byKind[k]) byKind[k] = pr.id; if (B.isLoop(params(pr))) ids.add(pr.id); }
   Object.values(byKind).forEach(id => ids.add(id));
-  for (const id of ['railgun', 'pulselaser', 'mortar']) ids.add(id);
+  for (const id of ['railgun', 'pulselaser', 'mortar', 'knockglass', 'knockfire', 'potshatter', 'wallgravel', 'gravelblast']) ids.add(id);
   for (const id of ids) {
     const p = params(preset(id)), raw = B.renderRaw(p, 4821), stems = B.renderStems(p, 4821);
-    assert.equal(stems.length, 4, id);
+    assert.equal(stems.length, 5, id);
     assert.ok(stems.some(Boolean), `${id}: at least one stem`);
     const L = new Float64Array(raw.L.length), R = new Float64Array(raw.R.length);
     for (const s of stems) {
@@ -206,4 +206,84 @@ test('an imported room carries every source, loops included, and still closes th
   assert.ok(finite(wet.L) && wet.L.length > dry.L.length + 0.3 * FS, 'the room adds its tail');
   const loop = B.renderRaw(B.merge(params(preset('quad')), { env: 'ir', irAsset: 'ir:test-room' }), 2);
   assert.ok(seam(loop.L) < 1 && seam(loop.R) < 1, 'loop seam');
+});
+
+test('hits are found where the knocks are, the slam the strongest', () => {
+  const a = B.getAsset('ex:door'), hits = B.detectHits(B.monoOf(a), 0.5), want = [0.25, 0.5, 0.75, 1.45, 1.68, 1.9, 2.12, 3.1];
+  assert.equal(hits.length, want.length, hits.map(h => h.t.toFixed(3)).join(' '));
+  hits.forEach((h, i) => assert.ok(Math.abs(h.t - want[i]) < 0.003, `hit ${i} at ${h.t}`));
+  assert.equal(Math.max(...hits.map(h => h.s)), hits[hits.length - 1].s);
+});
+
+test('the modes of a knock are measured back: frequency, decay and level', () => {
+  const mm = B.getModes('ex:knock'), F = [311, 742, 1297, 1938, 2716, 3528, 4405], T = [1.6, 1.1, 0.8, 0.55, 0.4, 0.3, 0.22], A = [1, 0.7, 0.55, 0.4, 0.3, 0.2, 0.15];
+  assert.equal(mm.modes.length, F.length);
+  mm.modes.forEach((m, i) => {
+    assert.ok(Math.abs(m.f / F[i] - 1) < 0.005, `f ${m.f} for ${F[i]}`);
+    assert.ok(Math.abs(m.t60 / T[i] - 1) < 0.15, `t60 ${m.t60} for ${T[i]}`);
+    assert.ok(Math.abs(m.a / A[i] - 1) < 0.25, `level ${m.a} for ${A[i]}`);
+  });
+  /* a short wooden knock in noise */
+  const n = 2 * FS, x = new Float32Array(n), r = B.rng(5);
+  [[180, 0.12, 1], [415, 0.08, 0.5], [830, 0.05, 0.33]].forEach(([f, t60, a]) => { let e = a; const R = Math.pow(10, -3 / (t60 * FS)); for (let i = 4800; i < n; i++) { x[i] += e * Math.sin(2 * Math.PI * f * (i - 4800) / FS); e *= R; } });
+  for (let i = 0; i < n; i++) x[i] += (r() - 0.5) * 0.003;
+  const w = B.measureModes(x);
+  assert.equal(w.modes.length, 3);
+  [180, 415, 830].forEach((f, i) => assert.ok(Math.abs(w.modes[i].f / f - 1) < 0.01, `wood f ${w.modes[i].f}`));
+  [0.12, 0.08, 0.05].forEach((t, i) => assert.ok(Math.abs(w.modes[i].t60 / t - 1) < 0.15, `wood t60 ${w.modes[i].t60}`));
+});
+
+test('a measured object breaks at its own pitch', () => {
+  const p = B.merge(params(preset('potshatter')), { trimLaunch: -40, trimWake: -40, trimImpact: -40, env: 'none', ground: 0 });
+  const raw = B.renderRaw(p, 3), N = 1 << 17, re = new Float64Array(N), im = new Float64Array(N);
+  for (let i = 0; i < N && i < raw.L.length; i++) re[i] = raw.L[i];
+  B.fft(re, im);
+  let best = 0, bk = 0;
+  for (let k = Math.round(100 * N / FS); k < Math.round(3000 * N / FS); k++) { const m = re[k] * re[k] + im[k] * im[k]; if (m > best) { best = m; bk = k; } }
+  assert.ok(Math.abs(bk * FS / N / 311 - 1) < 0.05, `strongest at ${(bk * FS / N).toFixed(1)} Hz`);
+});
+
+test('events start at the hits of a recording; the recording is its own stem', () => {
+  const base = B.merge(params(preset('knockfire')), { env: 'none', seqJitter: 0 });
+  const only = B.renderStems(B.merge(base, { trimCrack: -40, trimLaunch: -40, trimWake: -40, trimImpact: -40, seqGuide: 0 }), 2);
+  assert.deepEqual(only.map(Boolean), [false, false, false, false, true]);
+  const a = B.getAsset('ex:door'), s = only[4];
+  let dot = 0, ea = 0, es = 0, lag = -1;
+  for (let i = 0; i < s.L.length && lag < 0; i++) if (Math.abs(s.L[i]) > 0.01) lag = i;
+  let a0 = 0; while (Math.abs(a.L[a0]) <= 0.01 * B.peakOf(a.L)) a0++;
+  for (let i = 0; i + lag < s.L.length && i + a0 < a.L.length; i++) { dot += s.L[i + lag] * a.L[i + a0]; ea += a.L[i + a0] ** 2; es += s.L[i + lag] ** 2; }
+  assert.ok(dot / Math.sqrt(ea * es) > 0.999, 'the stem is the recording');
+  /* stronger hits make bigger events when strength sets size */
+  const flat = B.renderRaw(B.merge(base, { seqDyn: 0 }), 2), dyn = B.renderRaw(B.merge(base, { seqDyn: 1 }), 2);
+  assert.ok(finite(dyn.L) && flat.L.length > FS && Math.abs(dyn.L.length - flat.L.length) < FS, 'both render');
+  const hits = B.getHits('ex:door', base.seqSens), ev = dyn.events.filter(e => e.k !== 'pass');
+  assert.ok(ev.length >= hits.length, `${ev.length} events for ${hits.length} hits`);
+});
+
+test('grains are cut at the hits and land as debris', () => {
+  const g = B.getGrains('ex:gravel');
+  assert.ok(g.grains.length >= 20, `${g.grains.length} grains`);
+  for (let i = 1; i < g.grains.length; i++) assert.ok(g.grains[i].c >= g.grains[i - 1].c, 'ordered dark to bright');
+  const raw = B.renderRaw(params(preset('gravelblast')), 4);
+  assert.ok(finite(raw.L) && raw.L.length > FS);
+});
+
+test('a fit moves a setting toward the reference', () => {
+  const p = params(preset('thundersheet')), ref = B.renderRaw(B.merge(p, { tgThick: 2.5 }), 7);
+  B.setAsset('rec:test-ref', { name: 'ref', L: ref.L, R: ref.R });
+  let n = 0;
+  const r = B.job({ fit: true, id: 'f', p, seed: 7, key: 'tgThick', spec: { min: 0.3, max: 300, scale: 'log' }, ref: 'rec:test-ref' }, () => n++);
+  assert.equal(n, B.FIT_TRIES);
+  assert.ok(r.dist < r.before, `distance ${r.dist} from ${r.before}`);
+  assert.ok(r.value > 1.5 && r.value < 4, `thickness ${r.value}`);
+  const f = B.features(B.getAsset('ex:knock').L, B.getAsset('ex:knock').R);
+  assert.ok(Math.abs(f.decay / 1.6 - 1) < 0.2, `knock decay ${f.decay}`);
+});
+
+test('an impulse response starts at its first sound', () => {
+  const L = new Float32Array(FS);
+  for (let i = 0; i < 9600; i++) L[24000 + i] = Math.exp(-i / 1500) * Math.sin(i * 0.3);
+  const ir = B.prepareIR(L, L);
+  let k = 0; while (Math.abs(ir.L[k]) < 0.02) k++;
+  assert.ok(k <= 0.0011 * FS && k >= 0.0009 * FS, `first sound at ${k} samples`);
 });
