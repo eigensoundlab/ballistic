@@ -67,6 +67,10 @@ canvas { display: block; width: 100%; background: var(--well); }
 .statusrow input { accent-color: var(--tracer); width: 16px; height: 16px; margin: 0; }
 .btn { font: 600 13px/1 var(--font-body); color: var(--ink); background: transparent; border: 1px solid var(--ink); border-radius: 4px; padding: 9px 12px; cursor: pointer; }
 .btn:hover { background: var(--ink); color: var(--panel); }
+.btn.small { padding: 7px 10px; font-size: 12px; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:disabled:hover { background: transparent; color: var(--ink); }
+.toolrow { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .banks { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; align-items: start; }
 .bank { margin: 0; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
@@ -115,7 +119,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
     <h1>Ballistic Foley Lab
       <svg viewBox="0 0 38 28" aria-hidden="true"><path d="M1 14h7V3l22 22V14h7" fill="none" stroke="var(--tracer)" stroke-width="3" stroke-linejoin="miter"/></svg>
     </h1>
-    <p>Sound computed from physics: projectiles, blasts, collapsing cavities, breaking structures, engines, rotors, electric arcs, energy weapons from launcher to target, and forcefields. The action filters then push the result toward a film mix.</p>
+    <p>Sound computed from physics: projectiles, blasts, collapsing cavities, breaking structures, engines, rotors, electric arcs, energy weapons from launcher to target, forcefields, and your own recordings placed in the scene. The action filters then push the result toward a film mix.</p>
   </header>
 
   <section class="stage" aria-label="Source and output">

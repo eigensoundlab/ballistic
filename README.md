@@ -22,6 +22,7 @@ open it in any modern browser. Everything runs locally; nothing is uploaded.
 | Discharge | Thunder from a crooked channel split into stretches (Few), branches, return strokes, sustained arcs, charger whine, coil kick and ring |
 | Blaster | A weapon chain: launcher, bolt in flight, target (see below) |
 | Forcefield | A driven sheet of modes with beating generators, or a reduced plasma (MHD) model: slow, shear and fast waves, reconnection crashes, chorus, half-frequency ripple, solitons, kink disruption |
+| Recording | Your own sound, placed at a distance or flying past (Doppler, air, ground-bounce flanging), and optionally driving a body: a plate, a rail, a spring, a dispersive line or a recorded object |
 
 Any event can repeat on a timeline (bursts, salvos, swarms), and every Fire is a fresh take from a new seed.
 
@@ -39,6 +40,21 @@ Any event can repeat on a timeline (bursts, salvos, swarms), and every Fire is a
   hit, edge reflections included, arrives as a falling sweep, then the plate modes ring on. Water splashes and crackles
   with collapsing steam bubbles. Afterwards the hot spot sizzles and the body ticks as it cools; ice cracks instead, and
   each crack sings along the sheet.
+
+### Recordings and impulse responses
+
+- **Load a recording** (Recording source) places any WAV, AIFF, FLAC, MP3 or OGG in the scene; the first 15 s are used.
+  It can stand at a distance or fly past on a path, with the Doppler shift and the comb notch of its ground reflection
+  following the geometry. Through a body, every path from the source arrives as its own falling sweep, so rain on a
+  steel sheet or a voice down a long spring keeps the timing of the real thing. The built-in examples (engine, rain,
+  sung vowels) are synthetic, so the presets work before you load anything.
+- **Load a body IR** turns a recorded knock or tap on an object into the body the recording drives.
+- **Load a room IR** (Scene panel) uses a recorded space as the environment for every source, loops included.
+- **Save body IR** and **Save room IR** write the physical models as 32-bit float impulse responses, for any
+  convolution reverb in a DAW or a game engine.
+
+Loaded files stay in the page until it is reloaded. They are decoded and resampled to 48 kHz by your browser and never
+leave your computer.
 
 ## Action filters
 
@@ -62,6 +78,7 @@ Physics and Action switch plays the same take with and without them.
 The timing, geometry and dispersion follow the physics: arrival times, Mach cones, Doppler, sweep shapes and modal
 frequencies. Levels are physical for blasts, shocks and channel cracks. Where no measured level exists (launcher parts,
 struck bodies, aftermath, forcefields), the layer is set against the physical one, and the Layer levels panel says so.
+A recording has no known level: its body is set to its loudness, and only distance, air and ground bounce are physical.
 Real plasma waves are far above hearing, so the forcefield slows them down and shows the factor.
 
 ## Working on it

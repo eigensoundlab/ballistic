@@ -333,7 +333,8 @@ var ENVS = {
   valley: { name: 'Mountain valley', delays: [211, 283, 353, 431, 509, 613, 727, 853], rt60: 4.5, damp: 1400, wet: -12,
             taps: [{ ms: 480, g: 0.35, pan: 0.5 }, { ms: 900, g: 0.25, pan: -0.6 }, { ms: 1500, g: 0.15, pan: 0.2 }] },
   indoor: { name: 'Indoor range', delays: [9, 14, 17, 22, 30, 38, 48, 56], rt60: 1.1, damp: 6000, wet: -5 },
-  water:  { name: 'Deep water', delays: [131, 197, 263, 347, 431, 523, 617, 733], rt60: 3.8, damp: 900, wet: -9 }
+  water:  { name: 'Deep water', delays: [131, 197, 263, 347, 431, 523, 617, 733], rt60: 3.8, damp: 900, wet: -9 },
+  ir:     { name: 'Imported room (IR)', ir: true }
 };
 
 /* ---------- shared bits for the event sources ---------- */
@@ -1736,6 +1737,248 @@ function fieldLayers(pl, p, o, rnd, layers, ev, lab) {
 }
 function disruptName(pl) { return pl.plasma ? 'disruption' : 'collapse'; }
 
+/* ---------- recordings and impulse responses ----------
+   Recordings and impulse responses come in from outside as assets: 48 kHz stereo Float32Arrays, set with setAsset()
+   (the page decodes the files; the worker gets a copy). Three synthetic examples stand in until a file is loaded. */
+var ASSETS = {}, REC_MAX_S = 15, IR_MAX_S = 6;
+function setAsset(id, a) {
+  var n = Math.min(a.L.length, Math.round((/^ir:/.test(id) ? IR_MAX_S : REC_MAX_S) * FS));
+  ASSETS[id] = { name: a.name || id, L: a.L.subarray(0, n), R: (a.R || a.L).subarray(0, n) };
+  return ASSETS[id];
+}
+function getAsset(id) {
+  if (ASSETS[id]) return ASSETS[id];
+  if (EXAMPLES[id]) { var s = EXAMPLES[id].make(); ASSETS[id] = { name: EXAMPLES[id].name, L: s.L, R: s.R }; return ASSETS[id]; }
+  return null;
+}
+/* an impulse response as loaded: trailing silence cut, at most IR_MAX_S long, peak 1 */
+function prepareIR(L, R) {
+  R = R || L;
+  var pk = peakOf(L, R) || 1, thr = pk * 1e-4, n = Math.min(L.length, Math.round(IR_MAX_S * FS)) - 1;
+  while (n > 0 && Math.abs(L[n]) < thr && Math.abs(R[n]) < thr) n--;
+  n = Math.max(1, n + 1);
+  var a = new Float32Array(n), b = new Float32Array(n), fo = Math.min(n >> 2, Math.round(0.01 * FS)), i;
+  for (i = 0; i < n; i++) { a[i] = L[i] / pk; b[i] = R[i] / pk; }
+  for (i = 0; i < fo; i++) { a[n - 1 - i] *= i / fo; b[n - 1 - i] *= i / fo; }
+  return { L: a, R: b };
+}
+
+/* Fast convolution. Two real channels share one complex FFT: (L + iR) * h = L*h + i R*h for a real h. A stereo
+   response runs twice, keeping L*hL from the first pass and R*hR from the second. */
+function fftConvolve(L, R, hL, hR) {
+  var nh = Math.max(hL.length, hR ? hR.length : 0), n = L.length + nh - 1, N = 1, k;
+  while (N < n) N <<= 1;
+  var Xr = new Float64Array(N), Xi = new Float64Array(N);
+  Xr.set(L); Xi.set(R);
+  fft(Xr, Xi);
+  function pass(h) {
+    var Yr = new Float64Array(N), Yi = new Float64Array(N);
+    Yr.set(h); fft(Yr, Yi);
+    for (k = 0; k < N; k++) {
+      var a = Xr[k] * Yr[k] - Xi[k] * Yi[k], b = Xr[k] * Yi[k] + Xi[k] * Yr[k];
+      Yr[k] = a; Yi[k] = -b;   // conjugate: a forward FFT of the conjugate is the inverse, conjugated
+    }
+    fft(Yr, Yi);
+    return { re: Yr, im: Yi };
+  }
+  var p1 = pass(hL), p2 = hR && hR !== hL ? pass(hR) : p1, oL = new Float32Array(n), oR = new Float32Array(n);
+  for (k = 0; k < n; k++) { oL[k] = p1.re[k] / N; oR[k] = -p2.im[k] / N; }
+  return { L: oL, R: oR };
+}
+
+/* ---------- synthetic examples, so that every preset plays before a recording is loaded ---------- */
+function makeEngine() {
+  /* a four-cylinder engine at about 1800 rpm: 60 firings a second, uneven from cylinder to cylinder,
+     through two exhaust resonances, with intake roar */
+  var rnd = rng(77), n = 8 * FS, x = new Float32Array(n), ph = 0, i, k = 0;
+  for (i = 0; i < n; i++) {
+    var t = i / FS, f = 60 * (1 + 0.025 * Math.sin(TAU * 0.31 * t) + 0.01 * Math.sin(TAU * 1.7 * t));
+    ph += f / FS;
+    if (ph >= 1) { ph -= 1; k++; x[i] += (0.65 + 0.35 * rnd()) * (k % 4 === 1 ? 1.25 : 1); }
+  }
+  onePoleLP(x, 1200); onePoleLP(x, 1800);
+  biquad(x, 'pk', 115, 3, 12); biquad(x, 'pk', 640, 2, 6); biquad(x, 'hp', 35, 0.7);
+  var nz = shapedNoise(n, rnd, 2500, 120); toPeak(nz, 0.15 * peakOf(x));
+  for (i = 0; i < n; i++) x[i] += nz[i];
+  toPeak(x, 0.9);
+  return { L: x, R: x.slice() };
+}
+function makeRain() {
+  /* drops at about 250 a second: a click as each one lands, and a rising ping when it traps a bubble
+     (the bubble rings near 3.3 kHz per millimetre of radius, Minnaert) */
+  var rnd = rng(78), n = 8 * FS, L = new Float32Array(n), R = new Float32Array(n), t = 0, i;
+  while (t < 8 - 0.05) {
+    t += -Math.log(1 - rnd()) / 250;
+    var a = Math.pow(rnd(), 2) * (0.3 + 0.7 * rnd()), pan = rnd() * 2 - 1, gl = Math.cos((pan + 1) * Math.PI / 4), gr = Math.sin((pan + 1) * Math.PI / 4);
+    addN(L, t, 0.00015, a * gl); addN(R, t, 0.00015, a * gr);
+    if (rnd() < 0.25) {
+      var f0 = 3260 / (1 + 2 * rnd()), tau = 0.004 + 0.01 * rnd(), n0 = Math.round((t + 0.0005) * FS), m = Math.round(tau * 6 * FS), ph = 0;
+      for (i = 0; i < m && n0 + i < n; i++) {
+        var u = i / FS; ph += f0 * (1 + 0.1 * u / tau) / FS;
+        var s = 0.5 * a * Math.exp(-u / tau) * fsin(ph);
+        L[n0 + i] += s * gl; R[n0 + i] += s * gr;
+      }
+    }
+  }
+  var bed = shapedNoise(n, rnd, 6000, 300), bed2 = shapedNoise(n, rnd, 6000, 300);
+  toPeak(bed, 0.04); toPeak(bed2, 0.04);
+  for (i = 0; i < n; i++) { L[i] += bed[i]; R[i] += bed2[i]; }
+  var pk = peakOf(L, R) || 1; scale(L, 0.9 / pk); scale(R, 0.9 / pk);
+  return { L: L, R: R };
+}
+function makeVoice() {
+  /* sung vowels a, o, i on 110 Hz: a glottal pulse train through three formant resonances that glide between vowels */
+  var rnd = rng(79), n = Math.round(3.6 * FS), x = new Float32Array(n), ph = 0, i, j;
+  var V = [[0, 730, 1090, 2440], [1.15, 730, 1090, 2440], [1.45, 570, 840, 2410], [2.2, 570, 840, 2410], [2.5, 270, 2290, 3010], [3.6, 270, 2290, 3010]];
+  var y1 = [0, 0, 0], y2 = [0, 0, 0], bw = [80, 90, 120], lp = 0;
+  for (i = 0; i < n; i++) {
+    var t = i / FS, f0 = 110 * (1 + 0.018 * Math.sin(TAU * 5.2 * t) + 0.004 * (rnd() - 0.5));
+    ph += f0 / FS; if (ph >= 1) ph -= 1;
+    var g = ph < 0.6 ? 0.5 - 0.5 * Math.cos(Math.PI * ph / 0.6) : Math.cos(Math.PI * (ph - 0.6) / 0.8), src = g - lp; lp = g;
+    src += 0.003 * (rnd() - 0.5);
+    for (j = 0; j < V.length - 1 && V[j + 1][0] < t; j++);
+    var a = V[j], b = V[Math.min(j + 1, V.length - 1)], w = b[0] > a[0] ? (t - a[0]) / (b[0] - a[0]) : 0, out = 0, k;
+    for (k = 0; k < 3; k++) {
+      var F = a[k + 1] + (b[k + 1] - a[k + 1]) * w, r = Math.exp(-Math.PI * bw[k] / FS), y = src * (1 - r) + 2 * r * Math.cos(TAU * F / FS) * y1[k] - r * r * y2[k];
+      y2[k] = y1[k]; y1[k] = y; out += y / (k + 1);
+    }
+    x[i] = out * Math.min(1, t / 0.08, (3.6 - t) / 0.15);
+  }
+  toPeak(x, 0.9);
+  return { L: x, R: x.slice() };
+}
+var EXAMPLES = {
+  'ex:engine': { name: 'Example: engine (synthetic)', make: makeEngine },
+  'ex:rain': { name: 'Example: rain (synthetic)', make: makeRain },
+  'ex:voice': { name: 'Example: sung vowels (synthetic)', make: makeVoice }
+};
+
+/* ---------- the Recording source: placed or flying past, optionally driving a body ---------- */
+var REC_BODIES = ['steel', 'aluminium', 'glass', 'ice', 'wood', 'rail', 'line', 'spring', 'ir'];
+/* the body as an impulse response, peak 1: plates and rails ring with bending waves, the line and the spring sweep */
+function recBodyIR(p, rnd) {
+  var b = p.rcBody, buf, k;
+  if (PLATES[b]) return { m: bendIR(planPlate(b, p.rcThick / 1000, p.rcSize), b === 'wood' ? 3000 : 7000, rnd) };
+  if (b === 'rail') return { m: bendIR(planRail(p.rcLength), 8000, rnd) };
+  if (b === 'line') {
+    var q = { bpLength: p.rcLength, bpStiff: 0.6, bpTension: 0, bpHard: 6000, bpDamp: 0.3, bpEchoes: 3, bpRefl: 0.6 }, pl = planBlaster(q);
+    buf = new Float32Array(Math.ceil((pl.tEnd + 0.06) * FS) + 64);
+    pl.echoes.forEach(function (e) { chirpInto(buf, pl, q, e.m, e.g); });
+    toPeak(buf, 1);
+    return { m: buf };
+  }
+  if (b === 'spring') {
+    /* the last pass is 15 lengths long; at 60 Hz it arrives after 15 L / (2 sqrt(2 pi kappa 60)) */
+    buf = new Float32Array(Math.ceil((15 * p.rcLength / (2 * Math.sqrt(TAU * 0.15 * 60)) + 0.05) * FS) + 64);
+    for (k = 0; k < 8; k++) bendChirp(buf, 0, p.rcLength * (2 * k + 1), 0.15, Math.pow(0.8, k), 9000, 60, 0.01, 5000, rnd());
+    toPeak(buf, 1);
+    return { m: buf };
+  }
+  if (b === 'ir') { var a = getAsset(p.rcIr); return a ? { L: a.L, R: a.R } : null; }
+  return null;
+}
+/* the plan stays light (the body's impulse response is built at render time): what the diagram and readouts need */
+function planRecording(q) {
+  var a = getAsset(q.rcAsset), fly = q.rcMode === 'flyby', hs = q.rcHeight, hl = 1.7, b = q.rcBody, k, t0;
+  var out = { src: a, name: a ? a.name : '', len: a ? a.L.length / FS : 0, fly: fly, body: b, curves: [] };
+  if (b === 'ir') { var ia = getAsset(q.rcIr); out.irName = ia ? ia.name : ''; out.irLen = ia ? ia.L.length / FS : 0; }
+  if (fly) {
+    out.v = Math.max(q.rcSpeed, 0.5); out.dur = q.rcPass; out.missD = Math.hypot(q.miss, hs - hl); out.missR = Math.hypot(q.miss, hs + hl);
+    var xf = function (t) { return q.D + out.v * (t - out.dur / 2); };
+    out.trD = trajKin(out.dur, q.D, out.missD, xf); out.trR = trajKin(out.dur, q.D, out.missR, xf);
+    out.semis = 12 * Math.log2((C + out.v) / (C - Math.min(out.v, C * 0.95)));
+    var dp = out.missR - out.missD; out.notch = dp > 1e-6 ? C / (2 * dp) : 0;
+  } else {
+    out.r = Math.max(0.3, q.rcDist);
+    /* placed: the ground bounce of postLayer (source 1.5 m, ear 1.7 m) */
+    out.notch = C / (2 * (Math.hypot(out.r, 3.2) - Math.hypot(out.r, 0.2)));
+  }
+  /* sweep curves of a dispersive body, from the start of the recording */
+  t0 = fly ? 0 : out.r / C;
+  if (PLATES[b]) {
+    var pp = planPlate(b, q.rcThick / 1000, q.rcSize); out.kap = pp.kap; out.cb1k = pp.cb1k; out.f11 = pp.f11;
+    pp.paths.slice().sort(function (u, v) { return u.d - v.d; }).slice(0, 8).forEach(function (q2, j) { out.curves.push({ pts: sweepCurve(t0, q2.d, pp.kap, 16000, pp.fLo), w: Math.max(0.3, 1 - j * 0.1), c: j ? 'shock' : 'tracer' }); });
+  } else if (b === 'rail') {
+    var rp = planRail(q.rcLength); out.f1 = rp.f1;
+    rp.paths.slice().sort(function (u, v) { return u.d - v.d; }).slice(0, 6).forEach(function (q2, j) { out.curves.push({ pts: sweepCurve(t0, q2.d, rp.kap, 16000, 30), w: Math.max(0.3, 1 - j * 0.12), c: j ? 'shock' : 'ink' }); });
+  } else if (b === 'line') {
+    var bp = planBlaster({ bpLength: q.rcLength, bpStiff: 0.6, bpTension: 0, bpEchoes: 3, bpRefl: 0.6 }); out.tSweep = bp.tSweep;
+    bp.echoes.forEach(function (e, j) { var pts = []; for (k = 0; k < bp.K; k += 2) pts.push([t0 + e.m * bp.tau[k], bp.f[k]]); out.curves.push({ pts: pts, w: j ? Math.max(0.3, e.g) : 1, c: j ? 'shock' : 'tracer' }); });
+  } else if (b === 'spring') {
+    for (k = 0; k < 8; k++) out.curves.push({ pts: sweepCurve(t0, q.rcLength * (2 * k + 1), 0.15, 9000, 60), w: Math.max(0.3, Math.pow(0.8, k)), c: k ? 'shock' : 'tracer' });
+  }
+  return out;
+}
+/* a signal at least n long: looped, with a short crossfade at each seam */
+function loopTo(x, n) {
+  if (x.length >= n) return x.subarray(0, n);
+  var y = new Float32Array(n), xf = Math.min(1440, x.length >> 2), step = x.length - xf, o = 0, i;
+  while (o < n) {
+    for (i = 0; i < x.length && o + i < n; i++) {
+      var w = o > 0 && i < xf ? i / xf : 1;
+      y[o + i] = y[o + i] * (1 - w) + x[i] * w;
+    }
+    o += step;
+  }
+  return y;
+}
+function rms(L, R) { var e = 0, i; for (i = 0; i < L.length; i++) e += L[i] * L[i] + R[i] * R[i]; return Math.sqrt(e / (2 * L.length || 1)); }
+function recordingLayers(pl, p, o, rnd, layers, ev, lab) {
+  if (!pl.src) return;
+  var dry = { L: pl.src.L, R: pl.src.R }, body = null, i, ir = p.rcBody !== 'none' ? recBodyIR(p, rnd) : null;
+  if (ir) {
+    body = ir.m ? fftConvolve(dry.L, dry.R, ir.m, null) : fftConvolve(dry.L, dry.R, ir.L, ir.R);
+    /* a recording has no known level: the body is set to the loudness of the recording */
+    var s = rms(dry.L, dry.R) / (rms(body.L, body.R) || 1);
+    scale(body.L, s); scale(body.R, s);
+  }
+  if (pl.fly) {
+    /* a moving point source: the recording as mono, retimed for every position, with the ground bounce as a second path */
+    var ns = Math.floor((pl.trD.n - 1) / TRAJ_HZ * FS);
+    function fly(sig, g) {
+      var mono = new Float32Array(sig.L.length);
+      for (i = 0; i < mono.length; i++) mono[i] = (sig.L[i] + sig.R[i]) * 0.5;
+      mono = loopTo(mono, ns);
+      var d = movingSource(pl.trD, p.D, pl.missD, function (k) { return mono[k]; }, null);
+      if (d) layers.push({ L: d.L, R: d.R, t: o.t0 + d.t, g: g });
+      if (p.ground > 0) {
+        var refl = Float32Array.from(mono); onePoleLP(refl, 5000);
+        var r = movingSource(pl.trR, p.D, pl.missR, function (k) { return refl[k] * p.ground; }, null);
+        if (r) layers.push({ L: r.L, R: r.R, t: o.t0 + r.t, g: g });
+      }
+    }
+    fly(dry, o.g1);
+    if (body) fly(body, o.g2);
+    ev.push({ k: 'pass', t: o.t0 + pl.dur / 2 + pl.missD / C, label: lab ? 'pass' : '' });
+    return;
+  }
+  function place(sig, g) {
+    var L = Float32Array.from(sig.L), R = Float32Array.from(sig.R);
+    scale(L, 1 / pl.r); scale(R, 1 / pl.r); postLayer(L, pl.r, p.ground); postLayer(R, pl.r, p.ground);
+    layers.push({ L: L, R: R, t: o.t0 + pl.r / C, g: g });
+  }
+  place(dry, o.g1);
+  if (body) place(body, o.g2);
+  ev.push({ k: 'launch', t: o.t0 + pl.r / C, label: lab ? 'start' : '' });
+}
+
+/* ---------- impulse responses to save ---------- */
+function bodyIR(p, seed) {
+  var ir = recBodyIR(p, rng(seed || 1));
+  if (!ir) return null;
+  var L = ir.m || ir.L, R = ir.m || ir.R, out = prepareIR(Float32Array.from(L), Float32Array.from(R));
+  return out;
+}
+/* the room alone: an impulse through the environment's reverb, without the direct sound */
+function roomIR(p) {
+  var env = ENVS[p.env] || ENVS.none;
+  if (!env.rt60) return null;
+  var n = Math.ceil((env.rt60 * 1.5 + 0.5) * FS) + Math.round(((env.taps || []).reduce(function (m, t) { return Math.max(m, t.ms); }, 0)) * FS / 1000);
+  var imp = new Float32Array(n); imp[0] = 1;
+  var wet = fdn(imp, imp, env);
+  return prepareIR(wet.L, wet.R);
+}
+
 /* ---------- seamless loops: hover, static burn, field hum ---------- */
 function isLoop(p) { return (p.kind === 'rocket' && p.rkMode === 'static') || (p.kind === 'rotor' && p.rtMode === 'hover') || (p.kind === 'field' && p.ffMode === 'hum'); }
 /* The four layer groups (the Layer levels sliders). For a stem, every other group that is on gets a vanishing gain
@@ -1756,9 +1999,13 @@ function renderLoop(p, seed, only, ext) {
   var L = new Float32Array(Np), R = new Float32Array(Np);
   for (i = 0; i < Np; i++) { L[i] = (sig.mid[i] + sig.side[i]) / r; R[i] = (sig.mid[i] - sig.side[i]) / r; }
   L = periodicApply(L, function (b) { postLayer(b, r, p.ground); }); R = periodicApply(R, function (b) { postLayer(b, r, p.ground); });
-  var peakPa = peakOf(L, R), env = ENVS[p.env] || ENVS.none;
-  if (env.rt60) {
-    var tL = tile3(L), tR = tile3(R), wet = fdn(tL, tR, env), wg = dbToLin(env.wet);
+  var peakPa = peakOf(L, R), env = ENVS[p.env] || ENVS.none, irA = env.ir ? getAsset(p.irAsset) : null, tL, tR, wet, wg;
+  if (irA) {
+    /* an imported room: three periods through it, the last one kept, so the reverb wraps round the seam */
+    tL = tile3(L); tR = tile3(R); wet = fftConvolve(tL, tR, irA.L, irA.R); wg = dbToLin(p.irWet);
+    for (i = 0; i < Np; i++) { L[i] += wet.L[2 * Np + i] * wg; R[i] += wet.R[2 * Np + i] * wg; }
+  } else if (env.rt60) {
+    tL = tile3(L); tR = tile3(R); wet = fdn(tL, tR, env); wg = dbToLin(env.wet);
     for (i = 0; i < Np; i++) { L[i] += wet.L[2 * Np + i] * wg; R[i] += wet.R[2 * Np + i] * wg; }
   }
   if (ext) return { L: L, R: R };
@@ -1776,7 +2023,7 @@ function planRep(p, seed, k) {
     if (kind === 'explosion') q.exDist = p.exDist * a; else if (kind === 'destruction') q.dsDist = p.dsDist * a;
     else if (kind === 'implosion') q.imDist = p.imDist * a; else if (kind === 'discharge') q.dcDist = p.dcDist * a;
     else if (kind === 'blaster') { q.miss = p.miss * a; q.bpStiff = p.bpStiff * (1 + j * 0.3 * (grnd() - 0.5)); q.bvSpeed = p.bvSpeed * (1 + j * 0.1 * (grnd() - 0.5)); }
-    else if (kind === 'field') q.ffDist = p.ffDist * a; else q.miss = p.miss * a;
+    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
     if (kind !== 'projectile') pan = j * 1.4 * (grnd() - 0.5);
   }
   if (kind === 'explosion') out = { ex: planExplosion(q.exW, q.exDist, Math.round(q.exFrags), Math.round(q.exDebris), grnd) };
@@ -1787,6 +2034,7 @@ function planRep(p, seed, k) {
   else if (kind === 'discharge') out = { dc: planDischarge(q, grnd) };
   else if (kind === 'blaster') out = { wp: planWeapon(q, grnd) };
   else if (kind === 'field') out = { ff: planField(q, grnd) };
+  else if (kind === 'recording') out = { rc: planRecording(q) };
   else {
     out = analyzeProj(q); out.pay = null;
     if (out.hit && q.payload >= 0.01) out.pay = planExplosion(q.payload, out.hit.r, Math.round(q.exFrags), Math.round(q.exDebris), grnd);
@@ -1836,6 +2084,7 @@ function mixScene(p, seed, only) {
     else if (pl.kind === 'discharge') dischargeLayers(pl.dc, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'blaster') weaponLayers(pl.wp, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'field') fieldLayers(pl.ff, q, o, rnd, layers, ev, lab);
+    else if (pl.kind === 'recording') recordingLayers(pl.rc, q, o, rnd, layers, ev, lab);
     else projLayers(pl, q, o, rnd, layers, ev, lab);
     tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
   }
@@ -1843,7 +2092,8 @@ function mixScene(p, seed, only) {
   layers.forEach(function (l) { var n = (l.m || l.L).length; if (l.t < tStart) tStart = l.t; if (l.t + n / FS > tEnd) tEnd = l.t + n / FS; });
   if (!layers.length) { tStart = 0; tEnd = 0.2; }
   tStart -= 0.03;
-  var env = ENVS[p.env] || ENVS.none, durS = Math.min(16, tEnd - tStart + (env.rt60 ? env.rt60 * 0.9 + 0.2 : 0.05));
+  var env = ENVS[p.env] || ENVS.none, irA = env.ir ? getAsset(p.irAsset) : null;
+  var durS = Math.min(24, tEnd - tStart + (irA ? irA.L.length / FS + 0.05 : env.rt60 ? env.rt60 * 0.9 + 0.2 : 0.05));
   var N = Math.ceil(durS * FS), L = new Float32Array(N), R = new Float32Array(N);
   layers.forEach(function (l) {
     var s = Math.round((l.t - tStart) * FS), i, n, gl, gr;
@@ -1854,10 +2104,13 @@ function mixScene(p, seed, only) {
       for (i = 0, n = l.L.length; i < n && s + i < N; i++) { L[s + i] += l.L[i] * l.g; R[s + i] += l.R[i] * l.g; }
     }
   });
-  var peakPa = peakOf(L, R);
-  if (env.rt60) {
-    var wet = fdn(L, R, env), wg = dbToLin(env.wet);
-    for (var i = 0; i < N; i++) { L[i] += wet.L[i] * wg; R[i] += wet.R[i] * wg; }
+  var peakPa = peakOf(L, R), wet, wg, i;
+  if (irA) {
+    wet = fftConvolve(L, R, irA.L, irA.R); wg = dbToLin(p.irWet);
+    for (i = 0; i < N; i++) { L[i] += wet.L[i] * wg; R[i] += wet.R[i] * wg; }
+  } else if (env.rt60) {
+    wet = fdn(L, R, env); wg = dbToLin(env.wet);
+    for (i = 0; i < N; i++) { L[i] += wet.L[i] * wg; R[i] += wet.R[i] * wg; }
   }
   return { L: L, R: R, ev: ev, tStart: tStart, peakPa: peakPa, layers: layers.length };
 }
@@ -1937,7 +2190,7 @@ function actionize(raw, a) {
   /* a loop is processed as three periods and the middle one kept, so every stage sees a steady state */
   var loop = !!raw.loop, sL = loop ? tile3(raw.L) : raw.L, sR = loop ? tile3(raw.R) : raw.R;
   if (slow > 1.01) { L = stretch(sL, slow); R = stretch(sR, slow); } else { slow = 1; L = sL.slice(); R = sR.slice(); }
-  var maxN = 16 * FS;
+  var maxN = 24 * FS;
   if (!loop && L.length > maxN) { L = L.slice(0, maxN); R = R.slice(0, maxN); }
   if (a.tail > 0 && !loop) { var extra = Math.min(maxN + 4 * FS - L.length, Math.round((1 + a.tail * 3) * FS)); L = padTo(L, 0, extra); R = padTo(R, 0, extra); }
   var N = L.length, on = findOnsets(L, R);
@@ -2095,6 +2348,8 @@ var DEFAULTS = { kind: 'projectile',
   lnType: 'line', lnLength: 4, lnStages: 8, lnCharge: 0, lnChargeHz: 7000, lnRingHz: 180, lnEnergy: 20000, lnChamber: 30, lnSpring: 0.6,
   bvType: 'none', bvSpeed: 300, bvChannel: 40, bvPulses: 1, bvRate: 40, bvSizzle: 0.6, bvTone: 900, bvCal: 20,
   tgMat: 'none', tgEnergy: 2000, tgThick: 5, tgSize: 1.5, tgHeat: 0.5,
+  rcAsset: 'ex:engine', rcMode: 'place', rcDist: 5, rcSpeed: 25, rcPass: 8, rcHeight: 0.6, rcBody: 'none', rcThick: 1, rcSize: 2, rcLength: 4, rcIr: '',
+  irAsset: '', irWet: -6,
   ffMode: 'hum', ffBase: 62, ffType: 'membrane', ffBeat: 1.5, ffShimmer: 0.5, ffCorona: 0.4, ffHitE: 2000, ffGlide: 0.6, ffDist: 3,
   ffB: 1, ffDens: 1e19, ffBeta: 0.3, ffAngle: 30, ffSaw: 0.4, ffSawT: 1.33, ffChorus: 0.4, ffSurface: 0.4, ffSoliton: 0.4,
   seqCount: 1, seqInterval: 0.12, seqJitter: 0.2,
@@ -2178,7 +2433,14 @@ var PRESETS = [
   { id: 'plasmahit', name: 'Plasma shield impact', p: { kind: 'field', ffType: 'plasma', ffMode: 'impact', ffBase: 70, ffBeat: 0.8, ffCorona: 0.3, ffHitE: 5000, env: 'indoor' } },
   { id: 'kink', name: 'Plasma disruption', p: { kind: 'field', ffType: 'plasma', ffMode: 'powerdown', ffBase: 70, ffBeat: 0.8, ffCorona: 0.3, env: 'indoor' } },
   { id: 'tokamak', name: 'Tokamak sawteeth, loop', p: { kind: 'field', ffType: 'plasma', ffBase: 110, ffB: 2.2, ffDens: 3e19, ffBeta: 0.1, ffAngle: 15, ffSaw: 1, ffSawT: 0.5, ffChorus: 0, ffSurface: 0.1, ffSoliton: 0, ffCorona: 0.2, ffBeat: 0.3, env: 'indoor' } },
-  { id: 'chorus', name: 'Magnetosphere, loop', p: { kind: 'field', ffType: 'plasma', ffBase: 90, ffB: 0.6, ffBeta: 0.8, ffAngle: 55, ffSaw: 0.15, ffSawT: 2, ffChorus: 1, ffSurface: 0.2, ffSoliton: 0.2, ffCorona: 0.1, ffBeat: 0.4, ffShimmer: 0.8, env: 'valley' } }
+  { id: 'chorus', name: 'Magnetosphere, loop', p: { kind: 'field', ffType: 'plasma', ffBase: 90, ffB: 0.6, ffBeta: 0.8, ffAngle: 55, ffSaw: 0.15, ffSawT: 2, ffChorus: 1, ffSurface: 0.2, ffSoliton: 0.2, ffCorona: 0.1, ffBeat: 0.4, ffShimmer: 0.8, env: 'valley' } },
+
+  { id: 'carpass', name: 'Car pass-by', p: { kind: 'recording', rcAsset: 'ex:engine', rcMode: 'flyby', rcSpeed: 25, rcPass: 8, rcHeight: 0.5, D: 0, miss: 6, ground: 0.6, env: 'field' } },
+  { id: 'lowflyover', name: 'Low flyover, ground flanging', p: { kind: 'recording', rcAsset: 'ex:engine', rcMode: 'flyby', rcSpeed: 70, rcPass: 10, rcHeight: 60, D: 0, miss: 0, ground: 0.8, env: 'valley' } },
+  { id: 'tinroof', name: 'Rain on a tin roof', p: { kind: 'recording', rcAsset: 'ex:rain', rcBody: 'steel', rcThick: 0.6, rcSize: 3, rcDist: 3, env: 'indoor', trimCrack: -14 } },
+  { id: 'lakeice', name: 'Rain on lake ice', p: { kind: 'recording', rcAsset: 'ex:rain', rcBody: 'ice', rcThick: 40, rcSize: 40, rcDist: 6, env: 'valley', trimCrack: -18 } },
+  { id: 'laservoice', name: 'Voice through a dispersive line', p: { kind: 'recording', rcAsset: 'ex:voice', rcBody: 'line', rcLength: 25, rcDist: 2, env: 'indoor', trimCrack: -40 } },
+  { id: 'springvoice', name: 'Voice in a spring', p: { kind: 'recording', rcAsset: 'ex:voice', rcBody: 'spring', rcLength: 0.6, rcDist: 2, env: 'none', trimCrack: -10 } }
 ];
 var ACTION_DEFAULTS = { slowmo: 1, punch: 0, weight: 0, drive: 0, bite: 0, tail: 0, swell: 0, width: 0, loud: 0 };
 var ACTION_PRESETS = [
@@ -2190,6 +2452,7 @@ var ACTION_PRESETS = [
 ];
 var jobCache = { key: '', raw: null };
 function job(d) {
+  if (d.asset) { setAsset(d.id, d); return null; }
   var t = Date.now(), k = JSON.stringify(d.p) + '|' + d.seed;
   if (d.stems) return { id: d.id, kind: 'stems', stems: renderStems(d.p, d.seed), ms: Date.now() - t };
   if (jobCache.key !== k) { jobCache.raw = renderRaw(d.p, d.seed); jobCache.key = k; }
@@ -2198,7 +2461,8 @@ function job(d) {
 }
 function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for (k in over) o[k] = over[k]; return o; }
 
-root.BFX = { renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
+root.BFX = { setAsset: setAsset, getAsset: getAsset, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
+  EXAMPLES: EXAMPLES, REC_MAX_S: REC_MAX_S, IR_MAX_S: IR_MAX_S, renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
   encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
   ACTION_DEFAULTS: ACTION_DEFAULTS, ACTION_PRESETS: ACTION_PRESETS, merge: merge, _wake: wakeLayer, _modal: modalHit, rng: rng };
 })(typeof self !== 'undefined' ? self : globalThis);

@@ -34,6 +34,15 @@ later move into [SFX Workbench](https://github.com/eigensoundlab/SFXWorkbench), 
 9. **Commits:** author `Daniel Sandner <134306627+sandner-art@users.noreply.github.com>`. No AI attribution in commit
    messages or pull request descriptions: no `Co-Authored-By` trailers, no session links, no "generated with" lines.
 
+## Recordings and impulse responses
+
+Recordings and impulse responses are assets, not parameters: `setAsset(id, { name, L, R })` in `src/engine.js` stores
+them (ids `rec:<n>` for recordings, `ir:<n>` for impulse responses; `ex:` ids are the built-in synthetic examples), and
+parameters only name them (`rcAsset`, `rcIr`, `irAsset`). The page hands each one to the worker once with
+`job({ asset: true, id, name, L, R })`, which answers nothing. Assets last until the page reloads; `start()` in
+`src/app.js` falls back to the examples and built-in rooms when a saved state names one that is gone. Convolution goes
+through `fftConvolve`; the tests check it against the direct sum.
+
 ## Sending to SFX Workbench
 
 `sendToWorkbench()` in `src/app.js` opens or reuses a window named `sfxworkbench` on the same origin and posts

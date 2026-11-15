@@ -32,13 +32,13 @@ test('presets use only known parameters and every source type has presets', () =
     kinds.add(pr.p.kind || 'projectile');
   }
   assert.equal(new Set(B.PRESETS.map(pr => pr.id)).size, B.PRESETS.length, 'preset ids are unique');
-  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field']) assert.ok(kinds.has(k), k);
+  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording']) assert.ok(kinds.has(k), k);
 });
 
 test('every preset renders finite, audible, normalised audio', () => {
   for (const pr of B.PRESETS) {
     const raw = B.renderRaw(params(pr), 4821);
-    assert.ok(raw.L.length > FS * 0.1 && raw.L.length <= FS * 16.5, `${pr.id}: length ${raw.L.length}`);
+    assert.ok(raw.L.length > FS * 0.1 && raw.L.length <= FS * 24.5, `${pr.id}: length ${raw.L.length}`);
     assert.ok(finite(raw.L) && finite(raw.R), `${pr.id}: finite`);
     const pk = B.peakOf(raw.L, raw.R);
     assert.ok(pk > 0.99 && pk <= 1.0001, `${pr.id}: peak ${pk}`);
@@ -157,4 +157,53 @@ test('the zip writer stores every file with a central directory', () => {
   const secondLocal = dv.getUint32(cdOff + 46 + 5 + 42, true);
   assert.equal(dv.getUint32(secondLocal, true), 0x04034b50);
   assert.equal(new TextDecoder().decode(z.slice(secondLocal + 30, secondLocal + 30 + 10)), 'stem-2.wav');
+});
+
+test('fast convolution matches the direct sum, for a mono and a stereo response', () => {
+  const r = (n, s) => { let a = s; return Float32Array.from({ length: n }, () => ((a = (a * 16807) % 2147483647) / 2147483647) - 0.5); };
+  const L = r(500, 3), R = r(500, 5), hL = r(90, 7), hR = r(61, 11);
+  const direct = (x, h) => Float64Array.from({ length: x.length + h.length - 1 }, (_, n) => { let s = 0; for (let k = 0; k < h.length; k++) if (n - k >= 0 && n - k < x.length) s += x[n - k] * h[k]; return s; });
+  const mono = B.fftConvolve(L, R, hL, null), st = B.fftConvolve(L, R, hL, hR), dL = direct(L, hL), dR = direct(R, hL), dR2 = direct(R, hR);
+  let e = 0;
+  for (let n = 0; n < dL.length; n++) e = Math.max(e, Math.abs(mono.L[n] - dL[n]), Math.abs(mono.R[n] - dR[n]), Math.abs(st.L[n] - dL[n]));
+  for (let n = 0; n < dR2.length; n++) e = Math.max(e, Math.abs(st.R[n] - dR2[n]));
+  assert.ok(e < 1e-5, `error ${e}`);
+});
+
+test('a recording flying past falls in pitch by the Doppler ratio', () => {
+  const n = 10 * FS, tone = Float32Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * 1000 * i / FS));
+  B.setAsset('rec:test-tone', { name: 'tone', L: tone, R: tone });
+  const v = 30, p = B.merge(B.DEFAULTS, { kind: 'recording', rcAsset: 'rec:test-tone', rcMode: 'flyby', rcSpeed: v, rcPass: 10, rcHeight: 1.7, miss: 5, ground: 0, env: 'none' });
+  const raw = B.renderRaw(p, 1), w = FS, early = zcr(raw.L, Math.round(0.5 * FS), Math.round(0.5 * FS) + w), late = zcr(raw.L, raw.L.length - Math.round(1.6 * FS), raw.L.length - Math.round(1.6 * FS) + w);
+  const want = (B.C + v) / (B.C - v), got = early / late;
+  assert.ok(Math.abs(got / want - 1) < 0.02, `ratio ${got.toFixed(3)}, Doppler ${want.toFixed(3)}`);
+  assert.ok(Math.abs(early / 1000 - B.C / (B.C - v)) < 0.02 * B.C / (B.C - v), `approaching at ${early.toFixed(0)} Hz`);
+});
+
+test('loaded impulse responses are trimmed, capped and normalised; built-in bodies and rooms export', () => {
+  const L = new Float32Array(10 * FS), R = new Float32Array(10 * FS);
+  for (let i = 0; i < FS; i++) { L[i] = 0.5 * Math.exp(-i / 4800) * Math.sin(i); R[i] = 0.25 * Math.exp(-i / 4800) * Math.cos(i); }
+  const ir = B.prepareIR(L, R);
+  assert.ok(ir.L.length < FS * 1.01 && ir.L.length > FS * 0.3, `trimmed to ${ir.L.length}`);
+  assert.ok(Math.abs(B.peakOf(ir.L, ir.R) - 1) < 1e-6);
+  const long = B.prepareIR(Float32Array.from({ length: 9 * FS }, () => 0.5));
+  assert.ok(long.L.length <= B.IR_MAX_S * FS);
+  for (const body of ['steel', 'aluminium', 'glass', 'ice', 'wood', 'rail', 'line', 'spring']) {
+    const b = B.bodyIR(B.merge(B.DEFAULTS, { rcBody: body }), 1);
+    assert.ok(b && finite(b.L) && Math.abs(B.peakOf(b.L, b.R) - 1) < 1e-6, body);
+  }
+  for (const env of ['field', 'forest', 'urban', 'valley', 'indoor', 'water']) {
+    const r = B.roomIR(B.merge(B.DEFAULTS, { env }));
+    assert.ok(r && finite(r.L) && r.L.length > FS * 0.3, env);
+  }
+  assert.equal(B.roomIR(B.merge(B.DEFAULTS, { env: 'none' })), null);
+});
+
+test('an imported room carries every source, loops included, and still closes them cleanly', () => {
+  const room = B.prepareIR(Float32Array.from({ length: FS }, (_, i) => Math.exp(-i / 6000) * Math.sin(i * 0.7)), Float32Array.from({ length: FS }, (_, i) => Math.exp(-i / 6000) * Math.cos(i * 0.5)));
+  B.setAsset('ir:test-room', { name: 'room', L: room.L, R: room.R });
+  const dry = B.renderRaw(B.merge(params(preset('rifle')), { env: 'none' }), 2), wet = B.renderRaw(B.merge(params(preset('rifle')), { env: 'ir', irAsset: 'ir:test-room' }), 2);
+  assert.ok(finite(wet.L) && wet.L.length > dry.L.length + 0.3 * FS, 'the room adds its tail');
+  const loop = B.renderRaw(B.merge(params(preset('quad')), { env: 'ir', irAsset: 'ir:test-room' }), 2);
+  assert.ok(seam(loop.L) < 1 && seam(loop.R) < 1, 'loop seam');
 });
