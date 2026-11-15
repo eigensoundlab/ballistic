@@ -303,13 +303,14 @@ function startWorker() {
   try {
     worker = inline ? new Worker(URL.createObjectURL(new Blob([inline.textContent + '\nself.onmessage=function(e){self.postMessage(self.BFX.job(e.data));};'], { type: 'text/javascript' })))
       : new Worker('src/worker.js');
-    worker.onmessage = function (e) { finish(e.data); };
+    worker.onmessage = function (e) { if (e.data && e.data.kind === 'stems') gotStems(e.data); else finish(e.data); };
     worker.onerror = function () { dropWorker(); };
   } catch (err) { worker = null; }
 }
 function dropWorker() {
   if (worker) { try { worker.terminate(); } catch (e) {} }
   worker = null;
+  if (stemWait) runStemsSync(stemWait.msg);
   if (lastMsg && lastMsg.id === jobId) runSync(lastMsg);
 }
 function runSync(msg) { setTimeout(function () { finish(B.job(msg)); }, 20); }
@@ -835,25 +836,59 @@ function readouts() {
 /* ---------- boot ---------- */
 /* ---------- saving and sending ---------- */
 var inViewer = !!(window.claude && typeof window.claude.use === 'function');
-function fileBase() { return 'ballistic-' + (st.sp || kind()) + '-' + st.seed + (st.which === 'fx' ? '-action' : '-physics'); }
-function saveWav() {
-  var v = view(); if (!v) return;
-  var name = fileBase(), wav = B.encodeWav(v.L, v.R);
+var stemWait = null, stemSeq = 0;
+function fileBase() { return 'ballistic-' + (st.sp || kind()) + '-' + st.seed; }
+function mixName() { return fileBase() + (st.which === 'fx' ? '-action' : '-physics'); }
+function stemLabel(k) { return TRIMS[kind()][k][0]; }
+function stemName(k) { return fileBase() + '-stem-' + (k + 1) + '-' + stemLabel(k).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
+function wantStems() { return $('with-stems').checked; }
+function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+/* stems are rendered on request, in the worker: four more renders of the Physics version */
+function requestStems() {
+  return new Promise(function (res) {
+    var msg = { stems: true, id: 'stems-' + (++stemSeq), p: st.p, seed: st.seed };
+    stemWait = { msg: msg, res: res };
+    setStatus('Rendering stems');
+    if (worker) worker.postMessage(msg); else runStemsSync(msg);
+  });
+}
+function runStemsSync(msg) { setTimeout(function () { gotStems(B.job(msg)); }, 20); }
+function gotStems(r) {
+  if (!stemWait || r.id !== stemWait.msg.id) return;
+  var res = stemWait.res; stemWait = null; res(r.stems);
+}
+function stemFiles(stems, enc) {
+  var out = [];
+  stems.forEach(function (s, k) { if (s) out.push({ name: stemName(k) + '.wav', data: enc(s.L, s.R), label: stemLabel(k) }); });
+  return out;
+}
+function deliver(name, bytes, mime, note) {
   if (inViewer) {
     if (!dl) return;
-    dl.save({ filename: name + '.zip', data: new Blob([B.zipStore(name + '.wav', wav)]) }).then(function () { setStatus('Saved ' + name + '.zip (24-bit WAV inside)'); })
+    var zip = /\.zip$/.test(name) ? bytes : B.zipStore(name, bytes), zname = name.replace(/\.wav$/, '.zip');
+    dl.save({ filename: zname, data: new Blob([zip]) }).then(function () { setStatus('Saved ' + zname + ' (' + note + ')'); })
       .catch(function (e) { if (!e || e.code !== 'declined') setStatus('Saving is not available in this view.'); });
     return;
   }
-  var url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' })), link = el('a');
-  link.href = url; link.download = name + '.wav'; document.body.appendChild(link); link.click(); link.remove();
+  var url = URL.createObjectURL(new Blob([bytes], { type: mime })), link = el('a');
+  link.href = url; link.download = name; document.body.appendChild(link); link.click(); link.remove();
   setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-  setStatus('Saved ' + name + '.wav, 24-bit, 48 kHz');
+  setStatus('Saved ' + name + ' (' + note + ')');
+}
+function saveWav() {
+  var v = view(); if (!v) return;
+  var wav = B.encodeWav(v.L, v.R);
+  if (!wantStems()) { deliver(mixName() + '.wav', wav, 'audio/wav', '24-bit, 48 kHz'); return; }
+  requestStems().then(function (stems) {
+    var list = [{ name: mixName() + '.wav', data: wav }].concat(stemFiles(stems, B.encodeWavFloat));
+    deliver(fileBase() + '-stems.zip', B.zipFiles(list), 'application/zip', plural(list.length - 1, 'stem') + ' as 32-bit float WAV, the mix as 24-bit');
+  });
 }
 /* SFX Workbench lives on the same site, so the two pages can talk directly. This page opens or reuses a window named
-   "sfxworkbench" and posts the sound as a 32-bit float WAV. The workbench answers "ready" when it starts and "imported"
-   once the sound is in its library. Messages go only to this site and are read only from it. */
-var WB = { url: null, win: null, pending: null, timer: 0 };
+   "sfxworkbench" and posts the sound as a 32-bit float WAV, with its stems when asked; they land in the workbench library
+   in a "Ballistic Foley Lab" group, and the stems can go into its layer stack. The workbench answers "ready" when it
+   starts and "imported" once the sounds are in. Messages go only to this site and are read only from it. */
+var WB = { url: null, win: null, ready: false, pending: null, timer: 0 };
 function workbenchUrl() {
   try {
     var q = new URLSearchParams(location.search).get('workbench');
@@ -861,30 +896,45 @@ function workbenchUrl() {
   } catch (e) { return null; }
   return /\.github\.io$/.test(location.hostname) ? location.origin + '/SFXWorkbench/' : null;
 }
+function postPending() { try { WB.win.postMessage(WB.pending, location.origin); } catch (e) { /* answered by "ready" when it loads */ } }
 function sendToWorkbench() {
   var v = view(); if (!v || !WB.url) return;
-  var name = fileBase(), w = WB.win && !WB.win.closed ? WB.win : null, fresh = false;
-  var msg = { type: 'sfxworkbench:import', v: 1, id: name + '-' + Date.now().toString(36), from: 'Ballistic Foley Lab', files: [{ name: name + '.wav', bytes: B.encodeWavFloat(v.L, v.R).buffer }] };
+  /* the window has to open inside the click, before any stems are rendered, or the browser blocks it */
+  var w = WB.win && !WB.win.closed ? WB.win : null, fresh = false;
   if (!w) {
     w = window.open('', 'sfxworkbench');
     if (!w) { setStatus('The browser blocked the new window. Allow pop-ups for this site, then send again.'); return; }
     try { fresh = w.location.href === 'about:blank'; } catch (e) { fresh = false; }
     if (fresh) w.location.href = WB.url;
+    WB.ready = !fresh;
   }
-  WB.win = w; WB.pending = msg;
-  if (!fresh) { try { w.postMessage(msg, location.origin); } catch (e) { /* answered by "ready" when it loads */ } }
+  WB.win = w;
   try { w.focus(); } catch (e) { /* focus is up to the browser */ }
-  setStatus('Sending ' + name + '.wav to SFX Workbench');
-  clearTimeout(WB.timer);
-  WB.timer = setTimeout(function () {
-    if (WB.pending === msg) { WB.pending = null; setStatus('SFX Workbench did not answer. Reload it, then send again.'); }
-  }, 20000);
+  var base = mixName(), files = [{ name: base + '.wav', bytes: B.encodeWavFloat(v.L, v.R).buffer, role: 'mix' }];
+  function go(stems) {
+    stemFiles(stems || [], B.encodeWavFloat).forEach(function (f) { files.push({ name: f.name, bytes: f.data.buffer, role: 'stem' }); });
+    WB.pending = { type: 'sfxworkbench:import', v: 1, id: base + '-' + Date.now().toString(36), from: 'Ballistic Foley Lab', group: 'Ballistic Foley Lab', files: files };
+    if (WB.ready) postPending();
+    var n = files.length - 1, msg = WB.pending;
+    setStatus('Sending ' + base + '.wav' + (n ? ' and ' + plural(n, 'stem') : '') + ' to SFX Workbench');
+    clearTimeout(WB.timer);
+    WB.timer = setTimeout(function () {
+      if (WB.pending === msg) { WB.pending = null; setStatus('SFX Workbench did not answer. Reload it, then send again.'); }
+    }, 20000);
+  }
+  if (wantStems()) requestStems().then(go); else go(null);
 }
 window.addEventListener('message', function (e) {
-  if (e.origin !== location.origin || !e.data || !WB.pending) return;
-  if (e.data.type === 'sfxworkbench:ready' && e.source) { WB.win = e.source; e.source.postMessage(WB.pending, location.origin); }
-  else if (e.data.type === 'sfxworkbench:imported' && e.data.id === WB.pending.id) {
-    clearTimeout(WB.timer); WB.pending = null; setStatus('Sent to SFX Workbench. The sound is in its library.');
+  if (e.origin !== location.origin || !e.data) return;
+  if (e.data.type === 'sfxworkbench:ready') {
+    if (e.source) WB.win = e.source;
+    WB.ready = true;
+    if (WB.pending) postPending();
+  } else if (e.data.type === 'sfxworkbench:imported' && WB.pending && e.data.id === WB.pending.id) {
+    clearTimeout(WB.timer);
+    var n = WB.pending.files.length - 1;
+    WB.pending = null;
+    setStatus('Sent to SFX Workbench: in its library under Ballistic Foley Lab' + (n ? ', with ' + plural(n, 'stem') : '') + '.');
   }
 });
 

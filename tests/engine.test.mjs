@@ -117,3 +117,44 @@ test('WAV encoders write valid 24-bit and 32-bit float stereo files', () => {
   assert.equal(fl.getFloat32(44 + 8, true), 0.5);
   assert.equal(fl.getFloat32(44 + 12, true), -1);
 });
+
+test('stems add up to the Physics version, one preset of each source type and every loop', () => {
+  const ids = new Set();
+  const byKind = {};
+  for (const pr of B.PRESETS) { const k = pr.p.kind || 'projectile'; if (!byKind[k]) byKind[k] = pr.id; if (B.isLoop(params(pr))) ids.add(pr.id); }
+  Object.values(byKind).forEach(id => ids.add(id));
+  for (const id of ['railgun', 'pulselaser', 'mortar']) ids.add(id);
+  for (const id of ids) {
+    const p = params(preset(id)), raw = B.renderRaw(p, 4821), stems = B.renderStems(p, 4821);
+    assert.equal(stems.length, 4, id);
+    assert.ok(stems.some(Boolean), `${id}: at least one stem`);
+    const L = new Float64Array(raw.L.length), R = new Float64Array(raw.R.length);
+    for (const s of stems) {
+      if (!s) continue;
+      assert.equal(s.L.length, raw.L.length, `${id}: stem length`);
+      for (let i = 0; i < L.length; i++) { L[i] += s.L[i]; R[i] += s.R[i]; }
+    }
+    let err = 0;
+    for (let i = 0; i < L.length; i++) err = Math.max(err, Math.abs(L[i] - raw.L[i]), Math.abs(R[i] - raw.R[i]));
+    assert.ok(err < 2e-6, `${id}: stems differ from the mix by ${err}`);
+  }
+});
+
+test('a stem whose layer group is off is left out', () => {
+  const p = B.merge(params(preset('laser')), { trimImpact: -40 });
+  assert.equal(B.renderStems(p, 3)[3], null);
+});
+
+test('the zip writer stores every file with a central directory', () => {
+  const a = new Uint8Array([1, 2, 3]), b = new Uint8Array(1000).fill(7);
+  const z = B.zipFiles([{ name: 'a.wav', data: a }, { name: 'stem-2.wav', data: b }]), dv = new DataView(z.buffer);
+  const end = z.length - 22;
+  assert.equal(dv.getUint32(end, true), 0x06054b50);
+  assert.equal(dv.getUint16(end + 10, true), 2);
+  const cdOff = dv.getUint32(end + 16, true);
+  assert.equal(dv.getUint32(cdOff, true), 0x02014b50);
+  assert.equal(dv.getUint32(0, true), 0x04034b50);
+  const secondLocal = dv.getUint32(cdOff + 46 + 5 + 42, true);
+  assert.equal(dv.getUint32(secondLocal, true), 0x04034b50);
+  assert.equal(new TextDecoder().decode(z.slice(secondLocal + 30, secondLocal + 30 + 10)), 'stem-2.wav');
+});

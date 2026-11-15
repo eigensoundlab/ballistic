@@ -1738,9 +1738,18 @@ function disruptName(pl) { return pl.plasma ? 'disruption' : 'collapse'; }
 
 /* ---------- seamless loops: hover, static burn, field hum ---------- */
 function isLoop(p) { return (p.kind === 'rocket' && p.rkMode === 'static') || (p.kind === 'rotor' && p.rtMode === 'hover') || (p.kind === 'field' && p.ffMode === 'hum'); }
-function renderLoop(p, seed) {
+/* The four layer groups (the Layer levels sliders). For a stem, every other group that is on gets a vanishing gain
+   instead of zero: the code then takes exactly the same branches and random draws as the full mix, so the stems add
+   up to the mix sample for sample. Every gain enters the mix linearly, which is what makes this hold. */
+var STEM_EPS = 1e-20;
+function sceneGains(p, only) {
+  var g = [trimGain(p.trimCrack), trimGain(p.trimLaunch), trimGain(p.trimWake), trimGain(p.trimImpact)];
+  if (only != null) g = g.map(function (v, k) { return k === only || v === 0 ? v : STEM_EPS; });
+  return { g1: g[0], g2: g[1], g3: g[2], g4: g[3] };
+}
+function renderLoop(p, seed, only, ext) {
   var pl = planRep(p, seed, 0), rnd = rng(seed + 5), Np = LOOP_S * FS, i, sig, r;
-  var o = { g1: trimGain(p.trimCrack), g2: trimGain(p.trimLaunch), g3: trimGain(p.trimWake), g4: trimGain(p.trimImpact) };
+  var o = sceneGains(p, only);
   if (pl.kind === 'rotor') { sig = rotorSignal(pl.rt, p, o, rnd, Np, true); r = pl.rt.r; }
   else if (pl.kind === 'field') { sig = fieldSignal(pl.ff, p, o, rnd, Np, true); r = pl.ff.r; }
   else { sig = rocketStatic(pl, p, o, rnd, Np); r = pl.r; }
@@ -1752,6 +1761,7 @@ function renderLoop(p, seed) {
     var tL = tile3(L), tR = tile3(R), wet = fdn(tL, tR, env), wg = dbToLin(env.wet);
     for (i = 0; i < Np; i++) { L[i] += wet.L[2 * Np + i] * wg; R[i] += wet.R[2 * Np + i] * wg; }
   }
+  if (ext) return { L: L, R: R };
   var pk = peakOf(L, R) || 1;
   scale(L, 1 / pk); scale(R, 1 / pk);
   return { L: L, R: R, events: [], tStart: 0, peakPa: peakPa, spl: peakPa > 0 ? 20 * Math.log10(peakPa / 2e-5) : 0, layers: 1, loop: true };
@@ -1787,10 +1797,36 @@ function planRep(p, seed, k) {
 function analyze(p, seed) { return planRep(p, seed || 1, 0); }
 function renderRaw(p, seed) {
   if (isLoop(p)) return renderLoop(p, seed);
+  var sc = mixScene(p, seed, null), L = sc.L, R = sc.R, ev = sc.ev, tStart = sc.tStart, peakPa = sc.peakPa;
+  var pk = peakOf(L, R) || 1;
+  scale(L, 1 / pk); scale(R, 1 / pk);
+  var tt = trimTail(L, R); L = tt[0]; R = tt[1];
+  ev = ev.filter(function (e) { return e.t - tStart < L.length / FS; });
+  ev.forEach(function (e) { e.t -= tStart; });
+  ev.sort(function (a, b) { return a.t - b.t; });
+  return { L: L, R: R, events: ev, tStart: tStart, peakPa: peakPa, spl: peakPa > 0 ? 20 * Math.log10(peakPa / 2e-5) : 0, layers: sc.layers };
+}
+/* Stems: the four layer groups of the Physics version, scaled and cut like the mix, so they add up to it exactly.
+   Silent groups come back as null. */
+function renderStems(p, seed) {
+  var loop = isLoop(p), full = loop ? renderLoop(p, seed, null, true) : mixScene(p, seed, null), pk = peakOf(full.L, full.R) || 1, n = 0, out = [], k;
+  if (!loop) { scale(full.L, 1 / pk); scale(full.R, 1 / pk); n = trimTail(full.L, full.R)[0].length; }
+  var gs = sceneGains(p, null), on = [gs.g1, gs.g2, gs.g3, gs.g4];
+  for (k = 0; k < 4; k++) {
+    if (!on[k]) { out.push(null); continue; }
+    var sc = loop ? renderLoop(p, seed, k, true) : mixScene(p, seed, k), L = sc.L, R = sc.R;
+    scale(L, 1 / pk); scale(R, 1 / pk);
+    if (!loop) { var c = cutFade(L, R, n); L = c[0]; R = c[1]; }
+    out.push(peakOf(L, R) > 1e-6 ? { L: L, R: R } : null);
+  }
+  return out;
+}
+/* every layer of every repeat, mixed in place and through the room; not yet normalised */
+function mixScene(p, seed, only) {
   var layers = [], ev = [], count = clamp(Math.round(p.seqCount || 1), 1, 16), tOff = 0, k, trnd = rng(seed ^ 0x51ed);
   for (k = 0; k < count; k++) {
     var pl = planRep(p, seed, k), rnd = rng(seed + k * 104729), q = pl.q, lab = k === 0;
-    var o = { t0: tOff, pan: pl.pan, ground: q.ground, g1: trimGain(q.trimCrack), g2: trimGain(q.trimLaunch), g3: trimGain(q.trimWake), g4: trimGain(q.trimImpact) };
+    var o = sceneGains(q, only); o.t0 = tOff; o.pan = pl.pan; o.ground = q.ground;
     if (pl.kind === 'explosion') explosionLayers(pl.ex, { W: q.exW, r: q.exDist, surface: q.exSurface, t0: tOff, pan: pl.pan, ground: q.ground,
       gBlast: o.g1, gRumble: o.g2, gFrag: o.g3, gDebris: o.g4 }, rnd, layers, ev, lab);
     else if (pl.kind === 'implosion') implosionLayers(pl.im, q, o, rnd, layers, ev, lab);
@@ -1823,13 +1859,7 @@ function renderRaw(p, seed) {
     var wet = fdn(L, R, env), wg = dbToLin(env.wet);
     for (var i = 0; i < N; i++) { L[i] += wet.L[i] * wg; R[i] += wet.R[i] * wg; }
   }
-  var pk = peakOf(L, R) || 1;
-  scale(L, 1 / pk); scale(R, 1 / pk);
-  var tt = trimTail(L, R); L = tt[0]; R = tt[1];
-  ev = ev.filter(function (e) { return e.t - tStart < L.length / FS; });
-  ev.forEach(function (e) { e.t -= tStart; });
-  ev.sort(function (a, b) { return a.t - b.t; });
-  return { L: L, R: R, events: ev, tStart: tStart, peakPa: peakPa, spl: peakPa > 0 ? 20 * Math.log10(peakPa / 2e-5) : 0, layers: layers.length };
+  return { L: L, R: R, ev: ev, tStart: tStart, peakPa: peakPa, layers: layers.length };
 }
 
 /* ---------- action filters ---------- */
@@ -1875,6 +1905,10 @@ function trimTail(L, R) {
   var pk = peakOf(L, R), thr = pk * 3e-4, n = L.length - 1;
   while (n > 0 && Math.abs(L[n]) < thr && Math.abs(R[n]) < thr) n--;
   n = Math.min(L.length, n + Math.round(0.08 * FS));
+  return cutFade(L, R, n);
+}
+/* keep the first n samples and fade the last 50 ms out */
+function cutFade(L, R, n) {
   var fo = Math.min(n, Math.round(0.05 * FS)), a = L.slice(0, n), b = R.slice(0, n);
   for (var j = 0; j < fo; j++) { a[n - 1 - j] *= j / fo; b[n - 1 - j] *= j / fo; }
   return [a, b];
@@ -2019,21 +2053,33 @@ function crc32(b) {
   for (var i = 0; i < b.length; i++) crc = crcTable[(crc ^ b[i]) & 255] ^ (crc >>> 8);
   return (crc ^ -1) >>> 0;
 }
-/* single-file, uncompressed zip (the viewer saves zips, not bare wav files) */
-function zipStore(name, data) {
-  var nb = new Uint8Array(name.length), i; for (i = 0; i < name.length; i++) nb[i] = name.charCodeAt(i) & 127;
-  var out = new Uint8Array(30 + nb.length + data.length + 46 + nb.length + 22), dv = new DataView(out.buffer), crc = crc32(data), o = 0;
-  dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true); dv.setUint16(12, 0x21, true);
-  dv.setUint32(14, crc, true); dv.setUint32(18, data.length, true); dv.setUint32(22, data.length, true); dv.setUint16(26, nb.length, true);
-  out.set(nb, 30); out.set(data, 30 + nb.length); o = 30 + nb.length + data.length;
-  dv.setUint32(o, 0x02014b50, true); dv.setUint16(o + 4, 20, true); dv.setUint16(o + 6, 20, true); dv.setUint16(o + 14, 0x21, true);
-  dv.setUint32(o + 16, crc, true); dv.setUint32(o + 20, data.length, true); dv.setUint32(o + 24, data.length, true); dv.setUint16(o + 28, nb.length, true);
-  out.set(nb, o + 46);
-  var e = o + 46 + nb.length;
-  dv.setUint32(e, 0x06054b50, true); dv.setUint16(e + 8, 1, true); dv.setUint16(e + 10, 1, true);
-  dv.setUint32(e + 12, 46 + nb.length, true); dv.setUint32(e + 16, o, true);
+/* uncompressed zip of [{ name, data }] (the viewer inside Claude saves zips, not bare wav files) */
+function zipFiles(list) {
+  var parts = [], central = [], off = 0, total = 0;
+  list.forEach(function (f) {
+    var nb = new Uint8Array(f.name.length), i;
+    for (i = 0; i < f.name.length; i++) nb[i] = f.name.charCodeAt(i) & 127;
+    var crc = crc32(f.data), lh = new Uint8Array(30 + nb.length), dv = new DataView(lh.buffer);
+    dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true); dv.setUint16(12, 0x21, true);
+    dv.setUint32(14, crc, true); dv.setUint32(18, f.data.length, true); dv.setUint32(22, f.data.length, true); dv.setUint16(26, nb.length, true);
+    lh.set(nb, 30);
+    var ch = new Uint8Array(46 + nb.length), cv = new DataView(ch.buffer);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true); cv.setUint16(14, 0x21, true);
+    cv.setUint32(16, crc, true); cv.setUint32(20, f.data.length, true); cv.setUint32(24, f.data.length, true); cv.setUint16(28, nb.length, true);
+    cv.setUint32(42, off, true); ch.set(nb, 46);
+    parts.push(lh, f.data); central.push(ch); off += lh.length + f.data.length;
+  });
+  var csz = 0; central.forEach(function (c) { csz += c.length; });
+  var end = new Uint8Array(22), ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, list.length, true); ev.setUint16(10, list.length, true);
+  ev.setUint32(12, csz, true); ev.setUint32(16, off, true);
+  parts = parts.concat(central, [end]);
+  parts.forEach(function (q) { total += q.length; });
+  var out = new Uint8Array(total), o = 0;
+  parts.forEach(function (q) { out.set(q, o); o += q.length; });
   return out;
 }
+function zipStore(name, data) { return zipFiles([{ name: name, data: data }]); }
 
 /* ---------- presets ---------- */
 var DEFAULTS = { kind: 'projectile',
@@ -2145,13 +2191,14 @@ var ACTION_PRESETS = [
 var jobCache = { key: '', raw: null };
 function job(d) {
   var t = Date.now(), k = JSON.stringify(d.p) + '|' + d.seed;
+  if (d.stems) return { id: d.id, kind: 'stems', stems: renderStems(d.p, d.seed), ms: Date.now() - t };
   if (jobCache.key !== k) { jobCache.raw = renderRaw(d.p, d.seed); jobCache.key = k; }
   var fx = actionize(jobCache.raw, d.a);
   return { id: d.id, play: d.play, ms: Date.now() - t, raw: jobCache.raw, fx: fx };
 }
 function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for (k in over) o[k] = over[k]; return o; }
 
-root.BFX = { encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
+root.BFX = { renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
   encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
   ACTION_DEFAULTS: ACTION_DEFAULTS, ACTION_PRESETS: ACTION_PRESETS, merge: merge, _wake: wakeLayer, _modal: modalHit, rng: rng };
 })(typeof self !== 'undefined' ? self : globalThis);

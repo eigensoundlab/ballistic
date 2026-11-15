@@ -49,9 +49,13 @@ Physics and Action switch plays the same take with and without them.
 ## Saving and sending
 
 - **Save WAV** saves the version you are playing as a 24-bit, 48 kHz stereo WAV. Hover and burn loops save one seamless period.
-- **Send to SFX Workbench** (on the site) opens SFX Workbench in another tab, or uses the one it opened before, and hands it
-  the sound as a 32-bit float WAV, so nothing is lost on the way. Both pages are on eigensoundlab.github.io, so they talk
-  directly in the browser; nothing leaves your computer. SFX Workbench needs a version with the receiving side.
+- **With stems** adds the four layer groups of the Layer levels panel (for a blaster: launcher, bolt, impact, aftermath)
+  as separate files. Stems are the Physics version, before the action filters, and add up to it sample for sample.
+  Saved, they come in one zip with the mix; stems are 32-bit float so that nothing clips.
+- **Send to SFX Workbench** (on the site) opens SFX Workbench in another tab, or uses the one it opened before, and hands
+  it the sound as a 32-bit float WAV. It lands in a "Ballistic Foley Lab" group in the library. Sent with stems, they go
+  into its layer stack, unless the stack holds something you built; then a Layers button next to the sound loads them.
+  Both pages are on eigensoundlab.github.io, so they talk directly in the browser; nothing leaves your computer.
 
 ## How far to trust the numbers
 

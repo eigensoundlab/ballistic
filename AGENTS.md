@@ -37,7 +37,14 @@ later move into [SFX Workbench](https://github.com/eigensoundlab/SFXWorkbench), 
 ## Sending to SFX Workbench
 
 `sendToWorkbench()` in `src/app.js` opens or reuses a window named `sfxworkbench` on the same origin and posts
-`{ type: 'sfxworkbench:import', v: 1, id, from, files: [{ name, bytes }] }` with a 32-bit float WAV. SFX Workbench answers
-`{ type: 'sfxworkbench:ready', v: 1 }` to its opener when it starts and `{ type: 'sfxworkbench:imported', v: 1, id, count }`
-once the files are in its library. Both sides read messages only from their own origin. Change the message shape only
-together with the receiver in SFX Workbench.
+`{ type: 'sfxworkbench:import', v: 1, id, from, group, files: [{ name, bytes, role }] }`: the mix as a 32-bit float WAV
+with role `mix`, and, with stems on, one file per layer group with role `stem`. SFX Workbench puts them in the library
+group `group`, links the stems to the mix and may load them into its layer stack. It answers `{ type: 'sfxworkbench:ready',
+v: 1 }` to its opener when it starts and `{ type: 'sfxworkbench:imported', v: 1, id, count }` once the files are in its
+library. Both sides read messages only from their own origin. Change the message shape only together with the receiver
+in SFX Workbench (`src/app/sendlink.js` there).
+
+Stems come from `renderStems()` in `src/engine.js`: the other groups get a vanishing gain instead of zero, so every
+branch and random draw matches the full mix and the stems add up to it exactly. Keep every layer gain linear (no
+gain inside a square root, a division or a level-dependent switch other than `> 0`), or that stops being true; the
+stems test catches it.
