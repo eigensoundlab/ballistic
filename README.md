@@ -69,8 +69,26 @@ synthetic, so every preset plays before you load anything.
 - **Save body IR** and **Save room IR** write the physical models as 32-bit float impulse responses, for any
   convolution reverb in a DAW or a game engine.
 
-Sounds stay in the page until it is reloaded. They are decoded and resampled to 48 kHz by your browser and never leave
-your computer.
+### Keeping, saving and sending your sounds
+
+Every sound you record or load also appears under **Your sounds**, where it stays in this browser (IndexedDB) until you
+remove it, across reloads. From there: **Play**, **Save WAV**, **Send** to SFX Workbench, **Edit** (name, project, tags,
+notes) and **Remove**; **Save all** writes one zip, **Send all** hands every sound to SFX Workbench. Sounds are decoded
+and resampled to 48 kHz by your browser and never leave your computer unless you save or send them. The browser can
+still clear its storage when space runs low, so save what matters.
+
+**Project**, **Tags** and **Recordist** at the top go with every new recording and loaded file, and with saved renders.
+Tags are separated by commas, with / for levels (*Nature/Birds*). A saved WAV (24-bit, 48 kHz) carries:
+
+| Chunk | What is in it |
+|---|---|
+| `bext` (Broadcast WAV) | description (name and notes), originator, reference, origination date and time, time reference |
+| `iXML` | project, scene, take, note, tracks; in USER: input device, phone model (Chrome), browser, the sample rate recorded at, whether the browser's voice processing was off, time zone; for renders the parameters |
+| `_PMX` (XMP) | keywords as Lightroom (`lr:hierarchicalSubject`), digiKam (`TagsList`) and Kurator read them, with Kurator's groups as roots: `Nature\|Birds`, `Projects\|Forest walk`, `Source\|Ballistic Foley Lab`; creation date; title, notes, recordist |
+
+*Save all* adds a `.wav.xmp` sidecar per sound. [Kurator](https://github.com/eigensoundlab/kurator) takes the sidecar's
+date as the file's date and, with *Import keywords*, turns the keywords into tags in the right groups (subjects, project,
+source). It also shows the bext and iXML fields of the WAV itself.
 
 ### Recording, on a phone or elsewhere
 

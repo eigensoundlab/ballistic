@@ -213,6 +213,11 @@ var SPEC = [
   { bank: 'seq', when: isTriggered, id: 'seqGuide', label: 'The recording itself', hint: 'in the mix, own stem', min: -40, max: 6, round: 0.5, fmt: fDb },
   { bank: 'seq', id: 'seqJitter', label: 'Variation', hint: 'timing, distance, side', min: 0, max: 1, fmt: fPct },
 
+  { bank: 'lib', id: 'libTools', custom: libTools },
+  { bank: 'lib', id: 'libSession', custom: sessionRows },
+  { bank: 'lib', id: 'libList', custom: libListRow },
+  { bank: 'lib', id: 'libAll', custom: libAllRow },
+
   { bank: 'ref', obj: 'r', id: 'ref', label: 'Reference', hint: 'the real thing', sound: true },
   { bank: 'ref', id: 'refTools', custom: soundTools('ref') },
   { bank: 'ref', id: 'refPlot', custom: refPlot },
@@ -957,7 +962,7 @@ function readouts() {
 /* ---------- your sounds: loaded or recorded, used wherever a sound is asked for ---------- */
 /* Every sound goes into one list. A slot (the recording, a body, a room, the hits, a knock, grains, a reference) is a
    menu of these plus the built-in examples, with Load and Record next to it. Sounds last until the page reloads. */
-var LIB = [], assetSeq = 0, SLOT_LABEL = { rcAsset: 'recording', rcIr: 'knock', irAsset: 'room', seqAsset: 'hits', dsKnock: 'knock', grAsset: 'grains', ref: 'reference' };
+var LIB = [], assetSeq = 0, SLOT_LABEL = { lib: 'sound', rcAsset: 'recording', rcIr: 'knock', irAsset: 'room', seqAsset: 'hits', dsKnock: 'knock', grAsset: 'grains', ref: 'reference' };
 var SOUND_DEFAULT = { rcAsset: 'ex:engine', rcIr: 'ex:knock', irAsset: 'ex:stair', seqAsset: 'ex:door', dsKnock: 'ex:knock', grAsset: 'ex:gravel' };
 function fillSounds(sel, withNone) {
   var v = sel.value, g1 = el('optgroup'), g2 = el('optgroup');
@@ -971,23 +976,25 @@ function fillSounds(sel, withNone) {
   sel.value = v;
 }
 function refreshSoundSelects() { SPEC.forEach(function (s) { if (s.sound) fillSounds($('c-' + s.id), s.obj === 'r'); }); }
-function uniqueName(name) {
+function uniqueName(name, self) {
   var n = name, k = 2;
-  while (LIB.some(function (s) { return s.name === n; })) n = name + ' ' + (k++);
+  while (LIB.some(function (s) { return s.name === n && s.id !== self; })) n = name + ' ' + (k++);
   return n;
 }
-function addSound(name, L, R, slot) {
+function addSound(name, L, R, slot, meta) {
   var id = 'rec:' + (++assetSeq), nm = uniqueName(name);
   B.setAsset(id, { name: nm, L: L, R: R });
-  var a = B.getAsset(id);
-  LIB.push({ id: id, name: nm, dur: a.L.length / FS });
+  var a = B.getAsset(id), s = { id: id, seq: Date.now() * 1000 + assetSeq % 1000, name: nm, dur: a.L.length / FS, meta: meta || baseMeta({ origin: 'made', date: isoLocal(new Date()) }) };
+  LIB.push(s);
   if (worker) worker.postMessage({ asset: true, id: id, name: nm, L: a.L, R: a.R });
-  refreshSoundSelects();
+  keepSound(s);
+  refreshSoundSelects(); renderLibrary();
   useSound(slot, id);
-  return { id: id, name: nm, dur: a.L.length / FS, cut: L.length > a.L.length };
+  return { id: id, name: nm, dur: s.dur, cut: L.length > a.L.length };
 }
 /* choosing a sound for a slot also switches on what uses it */
 function useSound(slot, id) {
+  if (slot === 'lib') return;
   if (slot === 'ref') { st.r.ref = id; syncControls(); refChanged(); return; }
   var p = st.p;
   p[slot] = id;
@@ -998,10 +1005,10 @@ function useSound(slot, id) {
   else if (slot === 'grAsset') { if (p.kind === 'explosion') p.exSurface = 'rec'; else p.dsDebris = 'rec'; }
   st.sp = ''; syncControls(); rerender(true);
 }
-function fileInput(onFile) {
-  var inp = el('input'); inp.type = 'file'; inp.hidden = true;
+function fileInput(onFile, many) {
+  var inp = el('input'); inp.type = 'file'; inp.hidden = true; inp.multiple = !!many;
   inp.accept = 'audio/*,.wav,.wave,.aif,.aiff,.flac,.mp3,.ogg,.m4a,.aac,.caf,.webm,.opus';
-  inp.addEventListener('change', function () { if (inp.files && inp.files[0]) onFile(inp.files[0]); inp.value = ''; });
+  inp.addEventListener('change', function () { Array.prototype.forEach.call(inp.files || [], function (f) { onFile(f); }); inp.value = ''; });
   return inp;
 }
 function toolButton(id, text, title, onClick) { var b = el('button', 'btn small', text); b.type = 'button'; b.id = id; b.title = title; b.addEventListener('click', onClick); return b; }
@@ -1035,9 +1042,11 @@ function decodeAudio(file) {
 function loadSound(file, slot) {
   setStatus('Reading ' + file.name);
   decodeAudio(file).then(function (a) {
-    var s = addSound(file.name.replace(/\.[^.]+$/, ''), a.L, a.R, slot);
+    var s = addSound(file.name.replace(/\.[^.]+$/, ''), a.L, a.R, slot,
+      baseMeta({ origin: 'file', file: file.name, date: isoLocal(new Date(file.lastModified || Date.now())), loaded: isoLocal(new Date()) }));
     if (s.cut) setStatus('Loaded ' + s.name + ': the first ' + B.REC_MAX_S + ' s are used.');
     else if (slot === 'ref') setStatus('Loaded ' + s.name + ' as the reference.');
+    else if (slot === 'lib') setStatus('Loaded ' + s.name + '.');
   }).catch(function () { setStatus('Could not read ' + file.name + ' as audio. Try WAV, AIFF, FLAC, MP3, M4A or OGG.'); });
 }
 function hitNote() {
@@ -1049,6 +1058,238 @@ function hitNote() {
 }
 function hitRow() { var p = el('p', 'note'); p.id = 'hitNote'; return p; }
 
+/* ---------- your sounds: kept on this device, saved and sent with what is known about them ----------
+   Each sound keeps its metadata: when it was made, how (recorded, with which input and browser, or loaded from which
+   file), and the project, tags and notes. The project, tags and recordist set under Your sounds go with every new
+   sound and every saved render. Sounds are kept in this browser (IndexedDB) until removed; saving writes them as WAV
+   with bext, iXML and XMP, and a zip adds .xmp sidecars, which Kurator, Lightroom and digiKam read as keywords. */
+var SESSION = { project: '', tags: '', recordist: '' }, ENV = { browser: '', model: '' };
+function loadSession() {
+  try { var s = JSON.parse(localStorage.getItem('bfx-session') || '{}'); ['project', 'tags', 'recordist'].forEach(function (k) { if (typeof s[k] === 'string') SESSION[k] = s[k]; }); } catch (e) { /* storage may be off */ }
+}
+function saveSession() { try { localStorage.setItem('bfx-session', JSON.stringify(SESSION)); } catch (e) { /* storage may be off */ } }
+function tagList(s) { return String(s || '').split(/[,;]+/).map(function (t) { return t.trim(); }).filter(Boolean); }
+function browserInfo() {
+  var ua = navigator.userAgent, m, b = 'Browser', os = '';
+  if ((m = /Edg\/(\d+)/.exec(ua))) b = 'Edge ' + m[1];
+  else if ((m = /(?:Firefox|FxiOS)\/(\d+)/.exec(ua))) b = 'Firefox ' + m[1];
+  else if ((m = /(?:Chrome|CriOS)\/(\d+)/.exec(ua))) b = 'Chrome ' + m[1];
+  else if ((m = /Version\/(\d+)[\d.]* .*Safari/.exec(ua))) b = 'Safari ' + m[1];
+  if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) os = 'iPadOS';
+  else if ((m = /(?:iPhone|iPod).*? OS (\d+)/.exec(ua))) os = 'iOS ' + m[1];
+  else if ((m = /Android (\d+)/.exec(ua))) os = 'Android ' + m[1];
+  else if (/Windows/.test(ua)) os = 'Windows';
+  else if (/Mac OS X/.test(ua)) os = 'macOS';
+  else if (/Linux/.test(ua)) os = 'Linux';
+  return b + (os ? ' on ' + os : '');
+}
+function deviceInfo() {
+  ENV.browser = browserInfo();
+  /* Chrome tells the phone's model when asked; other browsers keep it to themselves */
+  try { if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) navigator.userAgentData.getHighEntropyValues(['model']).then(function (v) { ENV.model = (v && v.model) || ''; }).catch(function () {}); } catch (e) { /* not offered */ }
+}
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+/* local time with its offset, e.g. 2026-11-15T17:59:03+01:00 */
+function isoLocal(d) {
+  var o = -d.getTimezoneOffset(), s = o >= 0 ? '+' : '-', a = Math.abs(o);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) + s + pad2(Math.floor(a / 60)) + ':' + pad2(a % 60);
+}
+function timeZone() { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; } }
+function niceDate(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso || '');
+  return m ? +m[3] + ' ' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+m[2] - 1] + ' ' + m[1] + ', ' + m[4] + ':' + m[5] : '';
+}
+function baseMeta(extra) {
+  var m = { project: SESSION.project.trim(), tags: tagList(SESSION.tags), recordist: SESSION.recordist.trim(), notes: '', tz: timeZone(), browser: ENV.browser, model: ENV.model };
+  for (var k in extra) m[k] = extra[k];
+  return m;
+}
+/* what goes into the file: see wavFile in the engine */
+function fileMeta(s) {
+  var m = s.meta || {}, rec = m.origin === 'recorded';
+  return { title: s.name, note: m.notes, project: m.project, scene: s.name, take: m.take, tags: m.tags, source: 'Ballistic Foley Lab',
+    creator: m.recordist, date: m.date, reference: m.reference,
+    origin: rec ? 'Recorded with Ballistic Foley Lab' + (m.device ? ', ' + m.device : '') : m.origin === 'file' ? 'Loaded into Ballistic Foley Lab from ' + m.file : 'Ballistic Foley Lab',
+    user: [['Made', rec ? 'recorded' : m.origin === 'file' ? 'loaded from ' + m.file : m.origin], ['Input', m.device], ['Phone or computer', m.model], ['Browser', m.browser],
+      ['Recorded at', m.rate ? m.rate + ' Hz, ' + plural(m.channels || 1, 'channel') + (m.rate !== FS ? ', resampled to ' + FS + ' Hz' : '') : ''],
+      ['Voice processing', m.processing], ['Time zone', m.tz], ['Parameters', m.params]] };
+}
+function safeName(s) { return String(s || 'sound').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 100) || 'sound'; }
+
+/* ---------- keeping sounds in the browser (IndexedDB) ---------- */
+var IDB = null;
+function idb() {
+  if (IDB) return IDB;
+  IDB = new Promise(function (res) {
+    try {
+      var rq = indexedDB.open('ballistic-foley-lab', 1);
+      rq.onupgradeneeded = function () { rq.result.createObjectStore('sounds', { keyPath: 'id' }); };
+      rq.onsuccess = function () { res(rq.result); };
+      rq.onerror = rq.onblocked = function () { res(null); };
+    } catch (e) { res(null); }
+  });
+  return IDB;
+}
+function idbDo(mode, fn) {
+  return idb().then(function (d) {
+    if (!d) return null;
+    return new Promise(function (res) {
+      try {
+        var tx = d.transaction('sounds', mode), out = fn(tx.objectStore('sounds'));
+        tx.oncomplete = function () { res(out && 'result' in out ? out.result : true); };
+        tx.onerror = tx.onabort = function () { res(null); };
+      } catch (e) { res(null); }
+    });
+  });
+}
+function keepSound(s) {
+  var a = B.getAsset(s.id);
+  return idbDo('readwrite', function (os) { return os.put({ id: s.id, seq: s.seq, name: s.name, meta: s.meta, L: a.L, R: a.R }); })
+    .then(function (ok) { if (!ok) setStatus('Could not keep ' + s.name + ' in this browser (storage full or off). Save it to a file to keep it.'); });
+}
+function forgetSound(id) { return idbDo('readwrite', function (os) { return os.delete(id); }); }
+function restoreSounds() {
+  return idbDo('readonly', function (os) { return os.getAll(); }).then(function (list) {
+    (list || []).sort(function (a, b) { return a.seq - b.seq; }).forEach(function (r) {
+      if (!r || !r.L || B.getAsset(r.id)) return;
+      B.setAsset(r.id, { name: r.name, L: r.L, R: r.R });
+      LIB.push({ id: r.id, seq: r.seq, name: r.name, dur: r.L.length / FS, meta: r.meta || {} });
+      var n = +String(r.id).split(':')[1];
+      if (n > assetSeq) assetSeq = n;
+      if (worker) worker.postMessage({ asset: true, id: r.id, name: r.name, L: r.L, R: r.R });
+    });
+  });
+}
+
+/* ---------- the list ---------- */
+function libTools() {
+  var box = el('div', 'toolrow'), inp = fileInput(function (f) { loadSound(f, 'lib'); }, true);
+  box.appendChild(toolButton('load-lib', 'Load files', 'WAV, AIFF, FLAC, MP3, M4A or OGG; the first 15 s of each are used', function () { inp.click(); }));
+  box.appendChild(toolButton('rec-lib', 'Record', 'Record with the microphone, processing off. It starts when the sound starts; press Stop when done.', function () { toggleRecord('lib'); }));
+  box.appendChild(inp);
+  return box;
+}
+function textRow(id, label, hint, place) {
+  var row = el('div', 'row'), lab = el('label'), nm = el('span', 'nm', label), inp = el('input');
+  inp.type = 'text'; inp.id = id; inp.placeholder = place || ''; inp.autocomplete = 'off';
+  lab.setAttribute('for', id); if (hint) nm.appendChild(el('span', 'hint', hint)); lab.appendChild(nm);
+  row.appendChild(lab); row.appendChild(inp);
+  return row;
+}
+function sessionRows() {
+  var box = el('div', 'sessrows');
+  box.appendChild(textRow('sess-project', 'Project', 'goes with new sounds', 'Forest walk'));
+  box.appendChild(textRow('sess-tags', 'Tags', 'commas; / for levels', 'Nature/Birds, Dawn'));
+  box.appendChild(textRow('sess-recordist', 'Recordist', 'the author', 'Your name'));
+  [['sess-project', 'project'], ['sess-tags', 'tags'], ['sess-recordist', 'recordist']].forEach(function (f) {
+    var inp = box.querySelector('#' + f[0]);
+    inp.value = SESSION[f[1]];
+    inp.addEventListener('input', function () { SESSION[f[1]] = inp.value; saveSession(); });
+  });
+  return box;
+}
+function libListRow() { var d = el('div', 'liblist'); d.id = 'libList'; return d; }
+function libAllRow() {
+  var box = el('div', 'toolrow');
+  box.appendChild(toolButton('lib-save-all', 'Save all', 'Every sound as WAV in one zip, with .xmp sidecars for Kurator, Lightroom and digiKam', saveAllSounds));
+  box.appendChild(toolButton('lib-send-all', 'Send all to SFX Workbench', 'Every sound as 32-bit float WAV, into the workbench library', function () { sendSounds(LIB.slice()); }));
+  return box;
+}
+function soundLine(s) {
+  var m = s.meta || {}, how = m.origin === 'recorded' ? 'Recorded' : m.origin === 'file' ? 'Loaded from ' + m.file + ', dated' : 'Made';
+  return [how + ' ' + niceDate(m.date), m.origin === 'recorded' ? [m.device, m.model, m.browser].filter(Boolean).join(', ') : ''].filter(Boolean).join(' · ');
+}
+function tagLine(s) { var m = s.meta || {}; return [m.project ? 'Project: ' + m.project : '', (m.tags || []).join(', '), m.notes].filter(Boolean).join(' · '); }
+function renderLibrary() {
+  var list = $('libList'); if (!list) return;
+  list.textContent = '';
+  if (!LIB.length) list.appendChild(el('p', 'note', 'No sounds yet. Record or load one here or wherever a sound is asked for.'));
+  LIB.forEach(function (s) {
+    var card = el('div', 'snd'), head = el('div', 'snd-head'), info = el('p', 'snd-info', soundLine(s)), tl = tagLine(s), tools = el('div', 'toolrow');
+    head.appendChild(el('span', 'snd-name', s.name)); head.appendChild(el('span', 'snd-dur', fTime(s.dur)));
+    card.appendChild(head); card.appendChild(info);
+    if (tl) card.appendChild(el('p', 'snd-tags', tl));
+    tools.appendChild(toolButton('', 'Play', 'Play this sound as it is', function () { audition(s.id); }));
+    tools.appendChild(toolButton('', 'Save WAV', '24-bit, 48 kHz, with its date, project, tags and notes inside', function () { saveSound(s); }));
+    if (WB.url) tools.appendChild(toolButton('', 'Send', 'To SFX Workbench, as 32-bit float WAV', function () { sendSounds([s]); }));
+    var ed = toolButton('', 'Edit', 'Name, project, tags and notes', function () { form.hidden = !form.hidden; ed.setAttribute('aria-expanded', String(!form.hidden)); });
+    ed.setAttribute('aria-expanded', 'false');
+    tools.appendChild(ed);
+    var rm = toolButton('', 'Remove', 'Take it out of this browser. Save it first to keep it.', function () {
+      if (rm.dataset.sure) { removeSound(s.id); return; }
+      rm.dataset.sure = '1'; rm.textContent = 'Remove for good'; rm.classList.add('live');
+      setTimeout(function () { if (rm.isConnected) { delete rm.dataset.sure; rm.textContent = 'Remove'; rm.classList.remove('live'); } }, 4000);
+    });
+    tools.appendChild(rm);
+    card.appendChild(tools);
+    var form = el('div', 'snd-edit'), k = s.id.replace(/\W/g, '');
+    form.hidden = true;
+    [['name', 'Name', s.name], ['project', 'Project', (s.meta || {}).project || ''], ['tags', 'Tags', ((s.meta || {}).tags || []).join(', ')], ['notes', 'Notes', (s.meta || {}).notes || '']].forEach(function (f) {
+      var r = textRow('e-' + k + '-' + f[0], f[1], f[0] === 'tags' ? 'commas; / for levels' : '', '');
+      r.querySelector('input').value = f[2];
+      form.appendChild(r);
+    });
+    var done = toolButton('', 'Done', 'Keep the changes', function () {
+      var g = function (f) { return $('e-' + k + '-' + f).value.trim(); };
+      s.name = uniqueName(g('name') || s.name, s.id); s.meta.project = g('project'); s.meta.tags = tagList(g('tags')); s.meta.notes = g('notes');
+      var a = B.getAsset(s.id); if (a) a.name = s.name;
+      keepSound(s); refreshSoundSelects(); renderLibrary(); readouts();
+    });
+    var row = el('div', 'toolrow'); row.appendChild(done); form.appendChild(row);
+    card.appendChild(form);
+    list.appendChild(card);
+  });
+  $('lib-save-all').disabled = !LIB.length; $('lib-send-all').disabled = !LIB.length;
+  $('lib-send-all').hidden = !WB.url;
+}
+function removeSound(id) {
+  var i = LIB.findIndex(function (s) { return s.id === id; });
+  if (i < 0) return;
+  var s = LIB.splice(i, 1)[0];
+  B.removeAsset(id); forgetSound(id);
+  if (worker) worker.postMessage({ asset: true, remove: true, id: id });
+  /* a slot that used it goes back to its example */
+  var used = false;
+  SOUND_KEYS.forEach(function (k) { if (st.p[k] === id) { st.p[k] = SOUND_DEFAULT[k]; used = true; } });
+  if (st.r.ref === id) { st.r.ref = ''; refChanged(); }
+  refreshSoundSelects(); renderLibrary(); syncControls();
+  if (used) rerender(false);
+  else setStatus('Removed ' + s.name + '.');
+}
+function audition(id) {
+  var a = B.getAsset(id); if (!a) return;
+  try {
+    unlock(); stop();
+    var ab = ctx.createBuffer(2, a.L.length, FS);
+    ab.getChannelData(0).set(a.L); ab.getChannelData(1).set(a.R);
+    node = ctx.createBufferSource(); node.buffer = ab; node.connect(ctx.destination); node.start();
+  } catch (e) { setStatus('Audio could not start here.'); }
+}
+function wavOf(s, float) { var a = B.getAsset(s.id); return float ? B.encodeWavFloat(a.L, a.R, fileMeta(s)) : B.encodeWav(a.L, a.R, fileMeta(s)); }
+function saveSound(s) {
+  var name = safeName(s.name);
+  if (inViewer) { deliver(name + '.zip', B.zipFiles([{ name: name + '.wav', data: wavOf(s) }, { name: name + '.wav.xmp', data: utf8Bytes(B.xmpText(fileMeta(s))) }]), 'application/zip', 'WAV and .xmp sidecar'); return; }
+  deliver(name + '.wav', wavOf(s), 'audio/wav', '24-bit, 48 kHz, with its metadata');
+}
+function saveAllSounds() {
+  if (!LIB.length) return;
+  var used = {}, list = [];
+  LIB.forEach(function (s) {
+    var n = safeName(s.name), k = 2;
+    while (used[n.toLowerCase()]) n = safeName(s.name) + ' ' + (k++);
+    used[n.toLowerCase()] = 1;
+    list.push({ name: n + '.wav', data: wavOf(s) }, { name: n + '.wav.xmp', data: utf8Bytes(B.xmpText(fileMeta(s))) });
+  });
+  var proj = SESSION.project.trim();
+  deliver(safeName('ballistic-sounds' + (proj ? '-' + proj : '')) + '.zip', B.zipFiles(list), 'application/zip', plural(LIB.length, 'sound') + ' with .xmp sidecars');
+}
+function utf8Bytes(s) { return new TextEncoder().encode(s); }
+function sendSounds(list) {
+  if (!list.length || !WB.url) return;
+  var files = list.map(function (s) { return { name: safeName(s.name) + '.wav', bytes: wavOf(s, true).buffer, role: 'mix' }; });
+  postToWorkbench(files, list.length === 1 ? list[0].name : plural(list.length, 'sound'), 'sounds-');
+}
+
 /* ---------- recording with the microphone ----------
    Browser voice processing (echo cancellation, noise suppression, automatic gain) is asked off. Recording arms on
    Record and starts when the sound starts, with a short pre-roll, so the tap on the screen is not in it. Knocks,
@@ -1059,15 +1300,19 @@ var REC_WORKLET = 'class BfxCapture extends AudioWorkletProcessor { constructor(
   ' if (this.n + L > 2048) { this.port.postMessage(this.buf.map(function (b) { return b.slice(0, this.n); }, this)); this.n = 0; }' +
   ' for (c = 0; c < nc; c++) this.buf[c].set(inp[c], this.n); this.n += L; return true; } }' +
   ' registerProcessor("bfx-capture", BfxCapture);';
-var REC = { state: 'off', slot: '', ctx: null, stream: null, node: null, sink: null, src: null, chunks: [], frames: 0, pre: [], preFrames: 0,
+var REC = { info: null, t0: null, state: 'off', slot: '', ctx: null, stream: null, node: null, sink: null, src: null, chunks: [], frames: 0, pre: [], preFrames: 0,
   noise: 0, level: 0, hold: 0, quiet: 0, raf: 0, count: 0, clipped: false, armUntil: 0 };
 var AUTO_STOP = { rcIr: true, irAsset: true, dsKnock: true }, PREROLL = 0.15, QUIET_STOP = 1.5;
+/* what the browser says it did to the input: processing it was asked to switch off */
+function processingText(se) {
+  var on = [['echoCancellation', 'echo cancellation'], ['noiseSuppression', 'noise suppression'], ['autoGainControl', 'automatic gain']].filter(function (k) { return se[k[0]] === true; }).map(function (k) { return k[1]; });
+  var known = ['echoCancellation', 'noiseSuppression', 'autoGainControl'].some(function (k) { return typeof se[k] === 'boolean'; });
+  return !known ? 'not reported by the browser' : on.length ? on.join(', ') + ' still on' : 'off';
+}
 function recBusy() { return REC.state !== 'off'; }
 function recButtons() {
-  SPEC.forEach(function (s) {
-    var b = s.sound && $('rec-' + s.id);
-    if (!b) return;
-    var mine = recBusy() && REC.slot === s.id;
+  Array.prototype.forEach.call(document.querySelectorAll('button[id^="rec-"]'), function (b) {
+    var mine = recBusy() && REC.slot === b.id.slice(4);
     b.textContent = mine ? 'Stop' : 'Record';
     b.disabled = recBusy() && !mine;
     b.classList.toggle('live', mine);
@@ -1086,7 +1331,12 @@ function toggleRecord(slot) {
   REC.state = 'opening'; REC.slot = slot; REC.ctx = c; recButtons();
   setStatus('Asking for the microphone');
   navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 } } })
-    .then(function (stream) { REC.stream = stream; return openCapture(); })
+    .then(function (stream) {
+      REC.stream = stream;
+      var tr = stream.getAudioTracks()[0], se = tr && tr.getSettings ? tr.getSettings() : {};
+      REC.info = { label: tr ? tr.label : '', settings: se };
+      return openCapture();
+    })
     .then(function () {
       REC.state = 'armed'; REC.chunks = []; REC.frames = 0; REC.pre = []; REC.preFrames = 0; REC.noise = 0; REC.quiet = 0; REC.clipped = false;
       REC.armUntil = REC.ctx.currentTime + 0.35; recButtons(); recMeter();
@@ -1125,7 +1375,7 @@ function onChunk(chs) {
     if (REC.ctx.currentTime < REC.armUntil) { REC.noise = Math.max(REC.noise, pk); return; }
     REC.pre.push(chs); REC.preFrames += L;
     while (REC.pre.length > 1 && REC.preFrames - REC.pre[0][0].length > PREROLL * sr) REC.preFrames -= REC.pre.shift()[0].length;
-    if (pk >= thr) { REC.state = 'recording'; REC.chunks = REC.pre; REC.frames = REC.preFrames; REC.pre = []; REC.preFrames = 0; }
+    if (pk >= thr) { REC.state = 'recording'; REC.t0 = new Date(Date.now() - REC.preFrames / sr * 1000); REC.chunks = REC.pre; REC.frames = REC.preFrames; REC.pre = []; REC.preFrames = 0; }
     return;
   }
   if (REC.state !== 'recording') return;
@@ -1165,7 +1415,7 @@ function toEngineRate(chs, sr) {
   return off.startRendering().then(function (r) { var out = []; for (k = 0; k < chs.length; k++) out.push(new Float32Array(r.getChannelData(k))); return out; });
 }
 function endRecording(fromQuiet) {
-  var was = REC.state, sr = REC.ctx ? REC.ctx.sampleRate : FS, chunks = REC.chunks, frames = REC.frames, slot = REC.slot, clipped = REC.clipped;
+  var was = REC.state, sr = REC.ctx ? REC.ctx.sampleRate : FS, chunks = REC.chunks, frames = REC.frames, slot = REC.slot, clipped = REC.clipped, info = REC.info || { settings: {} }, t0 = REC.t0 || new Date();
   closeRec();
   if (was !== 'recording' || !frames) { setStatus('Nothing was recorded: no sound rose above the quiet.'); return; }
   var n = fromQuiet ? Math.max(1, frames - Math.round((QUIET_STOP - 0.3) * sr)) : frames, nc = Math.min(2, chunks[0].length), chs = [], p = 0, k, i;
@@ -1179,8 +1429,10 @@ function endRecording(fromQuiet) {
   var fo = Math.min(n >> 2, Math.round(0.005 * sr));
   chs.forEach(function (c) { for (i = 0; i < fo; i++) c[n - 1 - i] *= i / fo; });
   toEngineRate(chs, sr).then(function (out) {
-    var name = SLOT_LABEL[slot] === 'reference' ? 'Reference' : SLOT_LABEL[slot] === 'knock' ? 'Knock' : SLOT_LABEL[slot] === 'room' ? 'Room' : 'Recording';
-    var s = addSound(name + ' ' + (++REC.count), out[0], out[1] || out[0].slice(), slot);
+    var name = SLOT_LABEL[slot] === 'reference' ? 'Reference' : SLOT_LABEL[slot] === 'knock' ? 'Knock' : SLOT_LABEL[slot] === 'room' ? 'Room' : (SESSION.project.trim() || 'Recording');
+    var take = ++REC.count, s = addSound(name + ' ' + take, out[0], out[1] || out[0].slice(), slot, baseMeta({
+      origin: 'recorded', date: isoLocal(t0), take: take, device: info.label || 'Microphone', rate: sr, channels: nc, processing: processingText(info.settings),
+      reference: 'BFL-' + isoLocal(t0).slice(0, 10).replace(/-/g, '') + '-' + take }));
     setStatus('Recorded ' + s.name + ', ' + fTime(s.dur) + (clipped ? '. It clipped: move the phone back or make the sound softer, then record again.' : '.'));
   }).catch(function () { setStatus('The recording could not be converted to 48 kHz in this browser.'); });
 }
@@ -1312,7 +1564,7 @@ function gotStems(r) {
 }
 function stemFiles(stems, enc) {
   var out = [];
-  stems.forEach(function (s, k) { if (s) out.push({ name: stemName(k) + '.wav', data: enc(s.L, s.R), label: stemLabel(k) }); });
+  stems.forEach(function (s, k) { if (s) out.push({ name: stemName(k) + '.wav', data: enc(s.L, s.R, renderMeta('stem ' + (k + 1) + ', ' + stemLabel(k).toLowerCase())), label: stemLabel(k) }); });
   return out;
 }
 function deliver(name, bytes, mime, note) {
@@ -1328,9 +1580,18 @@ function deliver(name, bytes, mime, note) {
   setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
   setStatus('Saved ' + name + ' (' + note + ')');
 }
+/* a saved render: what it is, the session's project and tags, and the parameters that made it */
+function renderMeta(label) {
+  var pr = B.PRESETS.filter(function (x) { return x.id === st.sp; })[0], kn = KINDS.filter(function (x) { return x[0] === kind(); })[0][1];
+  var diff = {}, k;
+  for (k in st.p) if (st.p[k] !== B.DEFAULTS[k]) diff[k] = st.p[k];
+  var s = { name: (pr ? pr.name : kn) + ', take ' + st.seed + (label ? ', ' + label : ''),
+    meta: baseMeta({ origin: 'made', date: isoLocal(new Date()), notes: (st.which === 'fx' && !label ? 'Action version' : 'Physics version') + ' of a ' + kn.toLowerCase() + ' sound', params: JSON.stringify(diff) }) };
+  return fileMeta(s);
+}
 function saveWav() {
   var v = view(); if (!v) return;
-  var wav = B.encodeWav(v.L, v.R);
+  var wav = B.encodeWav(v.L, v.R, renderMeta(''));
   if (!wantStems()) { deliver(mixName() + '.wav', wav, 'audio/wav', '24-bit, 48 kHz'); return; }
   requestStems().then(function (stems) {
     var list = [{ name: mixName() + '.wav', data: wav }].concat(stemFiles(stems, B.encodeWavFloat));
@@ -1349,33 +1610,43 @@ function workbenchUrl() {
   } catch (e) { return null; }
   return /\.github\.io$/.test(location.hostname) ? location.origin + '/SFXWorkbench/' : null;
 }
-function postPending() { try { WB.win.postMessage(WB.pending, location.origin); } catch (e) { /* answered by "ready" when it loads */ } }
+function postPending() { try { var m = {}, k; for (k in WB.pending) if (k !== 'what') m[k] = WB.pending[k]; WB.win.postMessage(m, location.origin); } catch (e) { /* answered by "ready" when it loads */ } }
 function sendToWorkbench() {
   var v = view(); if (!v || !WB.url) return;
   /* the window has to open inside the click, before any stems are rendered, or the browser blocks it */
+  if (!openWorkbench()) return;
+  var base = mixName(), files = [{ name: base + '.wav', bytes: B.encodeWavFloat(v.L, v.R, renderMeta('')).buffer, role: 'mix' }];
+  function go(stems) {
+    stemFiles(stems || [], B.encodeWavFloat).forEach(function (f) { files.push({ name: f.name, bytes: f.data.buffer, role: 'stem' }); });
+    var n = files.length - 1;
+    queueForWorkbench(files, base + '.wav' + (n ? ' and ' + plural(n, 'stem') : ''), base + '-');
+  }
+  if (wantStems()) requestStems().then(go); else go(null);
+}
+/* the window must open inside the click; the files follow when the workbench is ready */
+function openWorkbench() {
   var w = WB.win && !WB.win.closed ? WB.win : null, fresh = false;
   if (!w) {
     w = window.open('', 'sfxworkbench');
-    if (!w) { setStatus('The browser blocked the new window. Allow pop-ups for this site, then send again.'); return; }
+    if (!w) { setStatus('The browser blocked the new window. Allow pop-ups for this site, then send again.'); return false; }
     try { fresh = w.location.href === 'about:blank'; } catch (e) { fresh = false; }
     if (fresh) w.location.href = WB.url;
     WB.ready = !fresh;
   }
   WB.win = w;
   try { w.focus(); } catch (e) { /* focus is up to the browser */ }
-  var base = mixName(), files = [{ name: base + '.wav', bytes: B.encodeWavFloat(v.L, v.R).buffer, role: 'mix' }];
-  function go(stems) {
-    stemFiles(stems || [], B.encodeWavFloat).forEach(function (f) { files.push({ name: f.name, bytes: f.data.buffer, role: 'stem' }); });
-    WB.pending = { type: 'sfxworkbench:import', v: 1, id: base + '-' + Date.now().toString(36), from: 'Ballistic Foley Lab', group: 'Ballistic Foley Lab', files: files };
-    if (WB.ready) postPending();
-    var n = files.length - 1, msg = WB.pending;
-    setStatus('Sending ' + base + '.wav' + (n ? ' and ' + plural(n, 'stem') : '') + ' to SFX Workbench');
-    clearTimeout(WB.timer);
-    WB.timer = setTimeout(function () {
-      if (WB.pending === msg) { WB.pending = null; setStatus('SFX Workbench did not answer. Reload it, then send again.'); }
-    }, 20000);
-  }
-  if (wantStems()) requestStems().then(go); else go(null);
+  return true;
+}
+function postToWorkbench(files, what, idBase) { if (openWorkbench()) queueForWorkbench(files, what, idBase); }
+function queueForWorkbench(files, what, idBase) {
+  WB.pending = { type: 'sfxworkbench:import', v: 1, id: (idBase + Date.now().toString(36)).replace(/[^\w.-]+/g, '-').slice(-60), from: 'Ballistic Foley Lab', group: 'Ballistic Foley Lab', files: files, what: what };
+  if (WB.ready) postPending();
+  var msg = WB.pending;
+  setStatus('Sending ' + what + ' to SFX Workbench');
+  clearTimeout(WB.timer);
+  WB.timer = setTimeout(function () {
+    if (WB.pending === msg) { WB.pending = null; setStatus('SFX Workbench did not answer. Reload it, then send again.'); }
+  }, 20000);
 }
 window.addEventListener('message', function (e) {
   if (e.origin !== location.origin || !e.data) return;
@@ -1385,9 +1656,9 @@ window.addEventListener('message', function (e) {
     if (WB.pending) postPending();
   } else if (e.data.type === 'sfxworkbench:imported' && WB.pending && e.data.id === WB.pending.id) {
     clearTimeout(WB.timer);
-    var n = WB.pending.files.length - 1;
+    var what = WB.pending.what;
     WB.pending = null;
-    setStatus('Sent to SFX Workbench: in its library under Ballistic Foley Lab' + (n ? ', with ' + plural(n, 'stem') : '') + '.');
+    setStatus('Sent ' + what + ' to SFX Workbench: in its library under Ballistic Foley Lab.');
   }
 });
 
@@ -1398,8 +1669,8 @@ function start(saved) {
     st.p = B.merge(B.DEFAULTS, saved.p); st.a = B.merge(B.ACTION_DEFAULTS, saved.a);
     st.sp = saved.sp || ''; st.ap = saved.ap || ''; st.which = saved.which === 'raw' ? 'raw' : 'fx'; st.seed = saved.seed || st.seed;
   }
-  /* loaded recordings and impulse responses last as long as the page: after a reload, fall back to what is built in */
-  SOUND_KEYS.forEach(function (k) { if (!B.getAsset(st.p[k])) st.p[k] = SOUND_DEFAULT[k]; });
+  loadSession(); deviceInfo();
+  var restore = restoreSounds();
   refreshColors(); buildControls();
   syncControls(); startWorker();
   drawScene(restTime()); drawScope(null); drawSpec(null);
@@ -1424,6 +1695,12 @@ function start(saved) {
   if (window.matchMedia) { var mq = window.matchMedia('(prefers-color-scheme: dark)'); if (mq.addEventListener) mq.addEventListener('change', themeChange); }
   if (window.MutationObserver) new MutationObserver(themeChange).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { if (!playing) drawAll(null); });
+  /* the sounds kept in this browser come back; a slot whose sound is gone falls back to its example */
+  restore.then(function () {
+    SOUND_KEYS.forEach(function (k) { if (!B.getAsset(st.p[k])) st.p[k] = SOUND_DEFAULT[k]; });
+    refreshSoundSelects(); renderLibrary(); syncControls();
+    if (LIB.length) rerender(false);
+  });
   var hot = window.claude && window.claude.hot;
   if (hot && hot.snapshot) hot.snapshot(function () { return { p: st.p, a: st.a, sp: st.sp, ap: st.ap, which: st.which, seed: st.seed }; });
 }

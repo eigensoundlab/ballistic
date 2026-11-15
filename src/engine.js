@@ -1757,6 +1757,10 @@ function setAsset(id, a) {
   for (k in READ) if (k.split('|')[1] === id) delete READ[k];
   return ASSETS[id];
 }
+function removeAsset(id) {
+  delete ASSETS[id];
+  for (var k in READ) if (k.split('|')[1] === id) delete READ[k];
+}
 function getAsset(id) {
   if (ASSETS[id]) return ASSETS[id];
   if (EXAMPLES[id]) { var s = EXAMPLES[id].make(); ASSETS[id] = { name: EXAMPLES[id].name, L: s.L, R: s.R }; return ASSETS[id]; }
@@ -2637,30 +2641,117 @@ function fft(re, im) {
     }
   }
 }
-function encodeWav(L, R) {
-  var N = L.length, bytes = new Uint8Array(44 + N * 6), dv = new DataView(bytes.buffer), o = 44;
-  function str(off, s) { for (var i = 0; i < s.length; i++) bytes[off + i] = s.charCodeAt(i); }
-  str(0, 'RIFF'); dv.setUint32(4, 36 + N * 6, true); str(8, 'WAVEfmt '); dv.setUint32(16, 16, true);
-  dv.setUint16(20, 1, true); dv.setUint16(22, 2, true); dv.setUint32(24, FS, true); dv.setUint32(28, FS * 6, true);
-  dv.setUint16(32, 6, true); dv.setUint16(34, 24, true); str(36, 'data'); dv.setUint32(40, N * 6, true);
-  for (var n = 0; n < N; n++) {
-    for (var c = 0; c < 2; c++) {
-      var v = Math.round(clamp(c ? R[n] : L[n], -1, 1) * 8388607);
-      bytes[o++] = v & 255; bytes[o++] = (v >> 8) & 255; bytes[o++] = (v >> 16) & 255;
-    }
+/* ---------- saved WAV files and what they carry ----------
+   A saved sound says where and when it was made, so that sound libraries and asset managers (Kurator, Soundminer,
+   REAPER, Lightroom-style catalogues) can sort it without anyone typing it in again:
+     bext  Broadcast WAV: description, originator, origination date and time, time reference
+     iXML  project, scene, take, note, tracks, and the recording device in USER
+     _PMX  XMP (also written as a .xmp sidecar): keywords as Lightroom (lr:hierarchicalSubject), digiKam (TagsList)
+           and Kurator read them, Kurator's groups as roots (Projects|..., Status|..., Source|...); dates; creator,
+           source and rights
+   meta = { title, note, project, scene, take, tags: ['Nature/Birds'], status, source, creator, rights,
+            date: '2026-11-15T17:59:03+01:00' (local time with its offset), user: [[label, value], ...] } */
+var ORIGINATOR = 'Ballistic Foley Lab', XMP_ROOT = { project: 'Projects', status: 'Status', source: 'Source' };
+function utf8(s) {
+  var u = unescape(encodeURIComponent(String(s))), b = new Uint8Array(u.length), i;
+  for (i = 0; i < u.length; i++) b[i] = u.charCodeAt(i);
+  return b;
+}
+/* bext is ASCII: accents dropped, anything else becomes '?' */
+function asciiOf(s) { return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\x20-\x7e]/g, '?'); }
+function xmlEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function tagPath(t) { return String(t).replace(/\\/g, '/').split('/').map(function (p) { return p.replace(/\s+/g, ' ').trim(); }).filter(Boolean).join('/'); }
+/* every keyword as a path: the subjects as given, then the project, status and source under their group's root */
+function keywordPaths(meta) {
+  var out = [];
+  (meta.tags || []).forEach(function (t) { var p = tagPath(t); if (p) out.push(p); });
+  ['project', 'status', 'source'].forEach(function (k) { var p = tagPath(meta[k] || ''); if (p) out.push(XMP_ROOT[k] + '/' + p); });
+  return out.filter(function (v, i) { return out.indexOf(v) === i; });
+}
+function dateParts(iso) {
+  var m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(iso || '');
+  return m ? { date: m[1], time: m[2] + ':' + m[3] + ':' + m[4], secs: +m[2] * 3600 + +m[3] * 60 + +m[4] } : null;
+}
+function bextBytes(meta, float) {
+  var hist = utf8(asciiOf('A=' + (float ? 'PCM_FLOAT' : 'PCM') + ',F=' + FS + ',W=' + (float ? 32 : 24) + ',M=stereo,T=' + ORIGINATOR) + '\r\n');
+  var b = new Uint8Array(602 + hist.length), dv = new DataView(b.buffer), d = dateParts(meta.date);
+  function put(off, len, s) { var a = asciiOf(s), i; for (i = 0; i < a.length && i < len; i++) b[off + i] = a.charCodeAt(i); }
+  put(0, 256, meta.title + (meta.note ? '. ' + meta.note : ''));
+  put(256, 32, ORIGINATOR);
+  put(288, 32, meta.reference || '');
+  if (d) {
+    put(320, 10, d.date); put(330, 8, d.time);
+    var ref = d.secs * FS;
+    dv.setUint32(338, ref % 4294967296, true); dv.setUint32(342, Math.floor(ref / 4294967296), true);
+  }
+  dv.setUint16(346, 1, true);
+  b.set(hist, 602);
+  return b;
+}
+function ixmlText(meta) {
+  var d = dateParts(meta.date), ref = d ? d.secs * FS : 0, user = (meta.user || []).filter(function (u) { return u[1] != null && u[1] !== ''; });
+  function el(tag, v) { return v == null || v === '' ? '' : ' <' + tag + '>' + xmlEsc(v) + '</' + tag + '>\n'; }
+  return '<?xml version="1.0" encoding="UTF-8"?>\n<BWFXML>\n' + el('IXML_VERSION', '2.10') + el('PROJECT', meta.project) +
+    el('SCENE', meta.scene || meta.title) + el('TAKE', meta.take) + el('NOTE', meta.note) +
+    ' <SPEED>\n  <FILE_SAMPLE_RATE>' + FS + '</FILE_SAMPLE_RATE>\n  <TIMESTAMP_SAMPLE_RATE>' + FS + '</TIMESTAMP_SAMPLE_RATE>\n' +
+    '  <TIMESTAMP_SAMPLES_SINCE_MIDNIGHT_HI>' + Math.floor(ref / 4294967296) + '</TIMESTAMP_SAMPLES_SINCE_MIDNIGHT_HI>\n' +
+    '  <TIMESTAMP_SAMPLES_SINCE_MIDNIGHT_LO>' + ref % 4294967296 + '</TIMESTAMP_SAMPLES_SINCE_MIDNIGHT_LO>\n </SPEED>\n' +
+    ' <TRACK_LIST>\n  <TRACK_COUNT>2</TRACK_COUNT>\n' +
+    '  <TRACK><CHANNEL_INDEX>1</CHANNEL_INDEX><INTERLEAVE_INDEX>1</INTERLEAVE_INDEX><NAME>L</NAME></TRACK>\n' +
+    '  <TRACK><CHANNEL_INDEX>2</CHANNEL_INDEX><INTERLEAVE_INDEX>2</INTERLEAVE_INDEX><NAME>R</NAME></TRACK>\n </TRACK_LIST>\n' +
+    el('USER', user.map(function (u) { return u[0] + ': ' + u[1]; }).join('\n')) + '</BWFXML>\n';
+}
+function xmpText(meta) {
+  var paths = keywordPaths(meta), flat = [], d = meta.date, s;
+  paths.forEach(function (p) {
+    var parts = p.split('/');
+    if (parts.length > 1 && /^(Projects|Status|Source)$/.test(parts[0])) parts = parts.slice(1);
+    parts.forEach(function (w) { if (flat.indexOf(w) < 0) flat.push(w); });
+  });
+  function bag(tag, kind, items) {
+    return items.length ? '\n   <' + tag + '>\n    <rdf:' + kind + '>' + items.map(function (i) { return '\n     <rdf:li>' + xmlEsc(i) + '</rdf:li>'; }).join('') + '\n    </rdf:' + kind + '>\n   </' + tag + '>' : '';
+  }
+  function alt(tag, v) { return v ? '\n   <' + tag + '>\n    <rdf:Alt>\n     <rdf:li xml:lang="x-default">' + xmlEsc(v) + '</rdf:li>\n    </rdf:Alt>\n   </' + tag + '>' : ''; }
+  s = '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>\n<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="' + ORIGINATOR + '">\n' +
+    ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n  <rdf:Description rdf:about=""\n' +
+    '    xmlns:dc="http://purl.org/dc/elements/1.1/"\n    xmlns:lr="http://ns.adobe.com/lightroom/1.0/"\n' +
+    '    xmlns:digiKam="http://www.digikam.org/ns/1.0/"\n    xmlns:xmp="http://ns.adobe.com/xap/1.0/"\n' +
+    '    xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"' +
+    (d ? '\n    xmp:CreateDate="' + xmlEsc(d) + '"\n    photoshop:DateCreated="' + xmlEsc(d) + '"' : '') +
+    '\n    xmp:CreatorTool="' + ORIGINATOR + '">' +
+    alt('dc:title', meta.title) + alt('dc:description', meta.note) +
+    bag('dc:subject', 'Bag', flat) + bag('lr:hierarchicalSubject', 'Bag', paths.map(function (p) { return p.replace(/\//g, '|'); })) +
+    bag('digiKam:TagsList', 'Seq', paths) +
+    (meta.creator ? bag('dc:creator', 'Seq', [meta.creator]) : '') +
+    (meta.origin ? '\n   <dc:source>' + xmlEsc(meta.origin) + '</dc:source>' : '') + alt('dc:rights', meta.rights) +
+    '\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end="w"?>\n';
+  return s;
+}
+/* a stereo WAV at 48 kHz, 24-bit PCM or 32-bit float, with the metadata chunks ahead of the audio when meta is given */
+function wavFile(L, R, float, meta) {
+  var N = L.length, bps = float ? 4 : 3, block = 2 * bps, chunks = [], fmt = new Uint8Array(16), fv = new DataView(fmt.buffer), n, c;
+  fv.setUint16(0, float ? 3 : 1, true); fv.setUint16(2, 2, true); fv.setUint32(4, FS, true); fv.setUint32(8, FS * block, true);
+  fv.setUint16(12, block, true); fv.setUint16(14, bps * 8, true);
+  chunks.push(['fmt ', fmt]);
+  if (meta) { chunks.push(['bext', bextBytes(meta, float)]); chunks.push(['iXML', utf8(ixmlText(meta))]); chunks.push(['_PMX', utf8(xmpText(meta))]); }
+  var dataLen = N * block, size = 4;
+  chunks.forEach(function (ch) { size += 8 + ch[1].length + (ch[1].length & 1); });
+  size += 8 + dataLen;
+  var bytes = new Uint8Array(8 + size), dv = new DataView(bytes.buffer), o = 0;
+  function id(s) { for (var i = 0; i < 4; i++) bytes[o + i] = s.charCodeAt(i); o += 4; }
+  id('RIFF'); dv.setUint32(o, size, true); o += 4; id('WAVE');
+  chunks.forEach(function (ch) { id(ch[0]); dv.setUint32(o, ch[1].length, true); o += 4; bytes.set(ch[1], o); o += ch[1].length + (ch[1].length & 1); });
+  id('data'); dv.setUint32(o, dataLen, true); o += 4;
+  if (float) for (n = 0; n < N; n++) { dv.setFloat32(o, L[n], true); dv.setFloat32(o + 4, R[n], true); o += 8; }
+  else for (n = 0; n < N; n++) for (c = 0; c < 2; c++) {
+    var v = Math.round(clamp(c ? R[n] : L[n], -1, 1) * 8388607);
+    bytes[o++] = v & 255; bytes[o++] = (v >> 8) & 255; bytes[o++] = (v >> 16) & 255;
   }
   return bytes;
 }
-/* 32-bit float WAV: keeps the render exactly, for handing on to SFX Workbench */
-function encodeWavFloat(L, R) {
-  var N = L.length, bytes = new Uint8Array(44 + N * 8), dv = new DataView(bytes.buffer), o = 44, n;
-  function str(off, s) { for (var i = 0; i < s.length; i++) bytes[off + i] = s.charCodeAt(i); }
-  str(0, 'RIFF'); dv.setUint32(4, 36 + N * 8, true); str(8, 'WAVEfmt '); dv.setUint32(16, 16, true);
-  dv.setUint16(20, 3, true); dv.setUint16(22, 2, true); dv.setUint32(24, FS, true); dv.setUint32(28, FS * 8, true);
-  dv.setUint16(32, 8, true); dv.setUint16(34, 32, true); str(36, 'data'); dv.setUint32(40, N * 8, true);
-  for (n = 0; n < N; n++) { dv.setFloat32(o, L[n], true); dv.setFloat32(o + 4, R[n], true); o += 8; }
-  return bytes;
-}
+function encodeWav(L, R, meta) { return wavFile(L, R, false, meta); }
+/* 32-bit float WAV: keeps the sound exactly, for handing on to SFX Workbench */
+function encodeWavFloat(L, R, meta) { return wavFile(L, R, true, meta); }
 var crcTable = null;
 function crc32(b) {
   if (!crcTable) { crcTable = new Uint32Array(256); for (var n = 0; n < 256; n++) { var c = n; for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; crcTable[n] = c; } }
@@ -2821,7 +2912,7 @@ var ACTION_PRESETS = [
 ];
 var jobCache = { key: '', raw: null };
 function job(d, post) {
-  if (d.asset) { setAsset(d.id, d); return null; }
+  if (d.asset) { if (d.remove) removeAsset(d.id); else setAsset(d.id, d); return null; }
   if (d.fit) return fitParam(d, post);
   var t = Date.now(), k = JSON.stringify(d.p) + '|' + d.seed;
   if (d.stems) return { id: d.id, kind: 'stems', stems: renderStems(d.p, d.seed), ms: Date.now() - t };
@@ -2831,7 +2922,7 @@ function job(d, post) {
 }
 function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for (k in over) o[k] = over[k]; return o; }
 
-root.BFX = { setAsset: setAsset, getAsset: getAsset, getIR: getIR, detectHits: detectHits, getHits: getHits, measureModes: measureModes, getModes: getModes,
+root.BFX = { setAsset: setAsset, getAsset: getAsset, removeAsset: removeAsset, xmpText: xmpText, ixmlText: ixmlText, keywordPaths: keywordPaths, getIR: getIR, detectHits: detectHits, getHits: getHits, measureModes: measureModes, getModes: getModes,
   getGrains: getGrains, features: features, distance: distance, matchScore: matchScore, posToVal: posToVal, monoOf: monoOf, BAND_HZ: BAND_HZ, MAX_TRIGGERS: MAX_TRIGGERS, FIT_TRIES: FIT_TRIES, triggered: triggered, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
   EXAMPLES: EXAMPLES, REC_MAX_S: REC_MAX_S, IR_MAX_S: IR_MAX_S, renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
   encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, DEFAULTS: DEFAULTS, PRESETS: PRESETS,

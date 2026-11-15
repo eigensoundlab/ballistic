@@ -45,6 +45,13 @@ again to any new worker. Sounds last until the page reloads; `start()` in `src/a
 when a saved state names one that is gone. Convolution goes through `fftConvolve`; the tests check it against the
 direct sum.
 
+The page keeps your sounds in IndexedDB (`ballistic-foley-lab`, store `sounds`: id, name, meta, L, R) and restores
+them before slots fall back. `meta` holds the facts the page knows (origin, date as local ISO time, input device, browser,
+model, processing) and what the user set (project, tags, notes). `wavFile(L, R, float, meta)` in the engine writes them
+as `bext`, `iXML` and `_PMX` (XMP) chunks ahead of the audio; `xmpText(meta)` is also the sidecar. Keywords follow
+Kurator's sidecar format (`kurator/xmp.py`): paths with `|` in `lr:hierarchicalSubject`, `/` in `digiKam:TagsList`,
+group roots `Projects`, `Status`, `Source`. Do not add Kurator's own namespace: the sidecar is not Kurator's.
+
 Hits from a recording start events in `mixScene` (at most `MAX_TRIGGERS`); `STRENGTH` lists which parameters a hit's
 strength scales per source type. The triggering recording is a fifth layer group (`g5` in `sceneGains`, its own
 stem), so the stems still add up. A fit is `job({ fit: true, ... }, post)`: it renders `FIT_TRIES` values of one

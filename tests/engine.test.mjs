@@ -287,3 +287,30 @@ test('an impulse response starts at its first sound', () => {
   let k = 0; while (Math.abs(ir.L[k]) < 0.02) k++;
   assert.ok(k <= 0.0011 * FS && k >= 0.0009 * FS, `first sound at ${k} samples`);
 });
+
+test('a saved WAV carries its date, project and keywords where sound libraries and Kurator look', () => {
+  const meta = { title: 'Kos na úsvitě', note: 'Za stodolou', project: 'Forest walk', take: 3, tags: ['Nature/Birds', ' Dawn '], source: 'Ballistic Foley Lab',
+    creator: 'Daniel Sandner', date: '2026-11-15T05:42:10+01:00', reference: 'BFL-20261115-3', user: [['Input', 'iPhone Microphone'], ['Empty', '']] };
+  const L = Float32Array.from([0, 0.5, -0.5, 1]), bytes = B.encodeWav(L, L, meta), dv = new DataView(bytes.buffer), dec = new TextDecoder();
+  const found = {};
+  for (let p = 12; p + 8 <= bytes.length;) { const id = dec.decode(bytes.subarray(p, p + 4)), n = dv.getUint32(p + 4, true); found[id] = bytes.subarray(p + 8, p + 8 + n); p += 8 + n + (n & 1); }
+  assert.deepEqual(Object.keys(found), ['fmt ', 'bext', 'iXML', '_PMX', 'data']);
+  assert.equal(dv.getUint32(4, true), bytes.length - 8, 'RIFF size');
+  assert.equal(found.data.length, 4 * 6);
+  const bext = found.bext, txt = (a, b) => dec.decode(bext.subarray(a, b)).split('\0')[0];
+  assert.equal(txt(0, 256), 'Kos na usvite. Za stodolou');
+  assert.equal(txt(256, 288), 'Ballistic Foley Lab');
+  assert.equal(txt(288, 320), 'BFL-20261115-3');
+  assert.equal(txt(320, 330), '2026-11-15'); assert.equal(txt(330, 338), '05:42:10');
+  assert.equal(new DataView(bext.buffer, bext.byteOffset).getUint32(338, true), (5 * 3600 + 42 * 60 + 10) * FS);
+  assert.ok(dec.decode(bext.subarray(602)).endsWith('T=Ballistic Foley Lab\r\n'));
+  const ixml = dec.decode(found.iXML), xmp = dec.decode(found._PMX);
+  assert.match(ixml, /<PROJECT>Forest walk<\/PROJECT>/); assert.match(ixml, /<SCENE>Kos na úsvitě<\/SCENE>/);
+  assert.match(ixml, /<USER>Input: iPhone Microphone<\/USER>/);
+  assert.deepEqual(B.keywordPaths(meta), ['Nature/Birds', 'Dawn', 'Projects/Forest walk', 'Source/Ballistic Foley Lab']);
+  for (const k of ['Nature|Birds', 'Dawn', 'Projects|Forest walk', 'Source|Ballistic Foley Lab']) assert.ok(xmp.includes('<rdf:li>' + k + '</rdf:li>'), k);
+  assert.match(xmp, /xmp:CreateDate="2026-11-15T05:42:10\+01:00"/);
+  assert.match(xmp, /<dc:subject>[\s\S]*<rdf:li>Forest walk<\/rdf:li>[\s\S]*<\/dc:subject>/);
+  assert.ok(!/<rdf:li>Projects<\/rdf:li>/.test(xmp), 'group roots stay out of the flat keywords');
+  assert.equal(B.xmpText(meta), xmp);
+});

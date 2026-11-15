@@ -80,6 +80,17 @@ canvas { display: block; width: 100%; background: var(--well); }
 .fitrow select { flex: 1 1 120px; min-width: 0; font: 500 13px/1.2 var(--font-body); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; }
 #refPlot { height: 130px; border: 1px solid var(--line); border-radius: 4px; }
 #fitNote .btn { margin-left: 4px; }
+.row input[type="text"] { font: 400 14px/1.2 var(--font-body); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 7px 8px; width: 100%; min-width: 0; box-sizing: border-box; }
+.row input[type="text"]::placeholder { color: var(--muted); }
+.sessrows { display: flex; flex-direction: column; gap: 8px; }
+.liblist { display: flex; flex-direction: column; gap: 8px; }
+.snd { border: 1px solid var(--line); border-radius: 4px; padding: 8px 9px; display: flex; flex-direction: column; gap: 6px; background: var(--bg); min-width: 0; }
+.snd-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.snd-name { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.snd-dur { font: 500 12px/1 var(--font-mono); color: var(--muted); white-space: nowrap; }
+.snd-info, .snd-tags { margin: 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.snd-tags { color: var(--ink); }
+.snd-edit { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; border-top: 1px solid var(--line); }
 
 .banks { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; align-items: start; }
 .bank { margin: 0; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
@@ -118,6 +129,8 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
   #scene { height: 168px; }
   .seg.kinds button { flex: 1 1 30%; font-size: 12.5px; letter-spacing: 0.02em; padding: 11px 2px; }
   .cap span + span { display: none; }
+  /* phones zoom into fields set smaller than 16 px */
+  .row select, .row input[type="text"], .fitrow select { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { #fire:active { transform: none; } }
 </style>
@@ -165,6 +178,10 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
     <fieldset class="bank" id="bank-mix">
       <legend>Layer levels</legend>
       <p class="note" id="mixNote">0 dB keeps the physical balance between layers.</p>
+    </fieldset>
+    <fieldset class="bank" id="bank-lib">
+      <legend>Your sounds</legend>
+      <p class="note">Recordings and loaded files, kept in this browser until you remove them. Saved WAV files carry their date, input device, project, tags and notes (Broadcast WAV, iXML, XMP); <em>Save all</em> adds .xmp sidecars that Kurator, Lightroom and digiKam read as keywords.</p>
     </fieldset>
     <fieldset class="bank" id="bank-ref">
       <legend>Reference</legend>
