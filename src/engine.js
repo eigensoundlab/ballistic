@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 (function (root) {
 'use strict';
 var FS = 48000, C = 343, P0 = 101325, RHO = 1.204, TRAJ_HZ = 4000, TAU = Math.PI * 2;

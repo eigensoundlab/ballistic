@@ -84,4 +84,10 @@ scripts/serve.mjs   static server for local work
 tests/              node:test checks: clean renders, seamless loops, repeatable takes, weapon physics, WAV files
 ```
 
-Pushing to `main` runs the tests and deploys the site with GitHub Actions (`.github/workflows/pages.yml`).
+Pushing to `main` runs the tests and deploys the site with GitHub Actions (`.github/workflows/pages.yml`), when the
+repository's Pages source is set to "GitHub Actions".
+
+## Licence
+
+Apache License 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE). © 2026 Daniel Sandner. The same licence as
+SFX Workbench, so generators can move between the two.

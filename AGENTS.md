@@ -30,7 +30,8 @@ later move into [SFX Workbench](https://github.com/eigensoundlab/SFXWorkbench), 
    level is set against a physical one; say so in a comment and in the Layer levels note (`MIX_NOTE` in `src/app.js`).
 6. **Every change has a test** in `tests/` when it adds or changes physics.
 7. **UI copy:** plain, specific words from the user's side. No emoji. Check light and dark themes and a 400 px wide view.
-8. **Commits:** author `Daniel Sandner <134306627+sandner-art@users.noreply.github.com>`. No AI attribution in commit
+8. **Licence:** Apache-2.0. Every source file starts with `// SPDX-License-Identifier: Apache-2.0`.
+9. **Commits:** author `Daniel Sandner <134306627+sandner-art@users.noreply.github.com>`. No AI attribution in commit
    messages or pull request descriptions: no `Co-Authored-By` trailers, no session links, no "generated with" lines.
 
 ## Sending to SFX Workbench

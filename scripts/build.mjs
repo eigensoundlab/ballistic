@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Builds dist/ballistic.html: one self-contained file (engine and app inlined) that runs from disk, offline.
 // The same file is what gets published as the Claude artifact. Usage: npm run build
 import { readFile, writeFile, mkdir } from 'node:fs/promises';

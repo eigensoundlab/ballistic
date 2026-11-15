@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Static server for local work: node scripts/serve.mjs [--port 8080] [--root <folder>]
 // To try Send to SFX Workbench locally, serve the folder that holds both checkouts so they share one origin:
 //   node scripts/serve.mjs --root ..   then open http://localhost:8080/ballistic/?workbench=/SFXWorkbench/

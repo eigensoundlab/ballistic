@@ -4,11 +4,28 @@
   "description": "Research bench for physical sound generators: projectiles, blasts, engines, rotors, arcs, energy weapons and forcefields, with film-style action filters.",
   "private": true,
   "author": "Daniel Sandner (https://orcid.org/0000-0002-1041-814X)",
+  "license": "Apache-2.0",
   "homepage": "https://eigensoundlab.github.io/ballistic/",
-  "repository": { "type": "git", "url": "git+https://github.com/eigensoundlab/ballistic.git" },
-  "bugs": { "url": "https://github.com/eigensoundlab/ballistic/issues" },
-  "keywords": ["sound design", "sfx", "game audio", "foley", "physical modelling", "procedural audio", "ballistics", "web audio"],
-  "engines": { "node": ">=22" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eigensoundlab/ballistic.git"
+  },
+  "bugs": {
+    "url": "https://github.com/eigensoundlab/ballistic/issues"
+  },
+  "keywords": [
+    "sound design",
+    "sfx",
+    "game audio",
+    "foley",
+    "physical modelling",
+    "procedural audio",
+    "ballistics",
+    "web audio"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node scripts/serve.mjs",
     "test": "node --test \"tests/*.test.mjs\"",

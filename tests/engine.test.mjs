@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Engine checks: every preset renders clean audio, loops close, takes repeat, and the weapon physics behaves as modelled.
 // The engine is a plain script that attaches BFX to the global object, the same way the page and the worker load it.
 import test from 'node:test';

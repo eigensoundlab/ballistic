@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 (function () {
 'use strict';
 var B = window.BFX, FS = B.FS, C = B.C;
