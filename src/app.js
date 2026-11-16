@@ -2140,7 +2140,7 @@ function kuratorWait(ms, text) {
     setStatus(text);
   }, ms);
 }
-var KUR_GONE = 'Kurator did not answer. Start Kurator on this computer, then send again. If it runs on another port, open Ballistic from Kurator (Settings, Recording sessions, Open Ballistic Foley Lab) once.';
+var KUR_GONE = 'Kurator did not answer. Start Kurator on this computer (a version newer than 0.19.1 takes sessions), then send again. If it runs on another port, open Ballistic from Kurator (Settings, Recording sessions, Open Ballistic Foley Lab) once.';
 function sendToKurator(list, plan, sid, name, noun) {
   var what = plural(list.length, noun);
   if (!list.length || !kuratorHere()) return;
