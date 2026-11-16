@@ -1196,6 +1196,7 @@ function libAllRow() {
   var box = el('div', 'toolrow');
   box.appendChild(toolButton('lib-save-all', 'Save all', 'Every sound as WAV in one zip, with .xmp sidecars for Kurator, Lightroom and digiKam', saveAllSounds));
   box.appendChild(toolButton('lib-send-all', 'Send all to SFX Workbench', 'Every sound as 32-bit float WAV, into the workbench library', function () { sendSounds(LIB.slice()); }));
+  box.appendChild(toolButton('lib-kur-all', 'Send all to Kurator', 'Kurator on this computer: every sound into its library with its tags; sounds sent before are not added twice', sendAllToKurator));
   return box;
 }
 function soundLine(s) {
@@ -1244,6 +1245,7 @@ function renderLibrary() {
   });
   $('lib-save-all').disabled = !LIB.length; $('lib-send-all').disabled = !LIB.length;
   $('lib-send-all').hidden = !WB.url;
+  $('lib-kur-all').disabled = !LIB.length; $('lib-kur-all').hidden = !kuratorHere();
 }
 function removeSound(id) {
   var i = LIB.findIndex(function (s) { return s.id === id; });
@@ -1281,7 +1283,21 @@ function saveSound(s) {
 }
 function saveAllSounds() {
   if (!LIB.length) return;
-  deliver(sessionZipName(SESSION.project.trim()), sessionZip(LIB, null), 'application/zip', plural(LIB.length, 'sound') + ' with .xmp sidecars and a list for Kurator');
+  deliver(sessionZipName(SESSION.project.trim()), sessionZip(LIB, null, libSession()), 'application/zip', plural(LIB.length, 'sound') + ' with .xmp sidecars and a list for Kurator');
+}
+/* Your sounds as one session of this browser, so Kurator adds only the new ones to its folder each time */
+function libSession() {
+  var id = '';
+  try { id = localStorage.getItem('bfx-libid') || ''; } catch (e) { /* storage off */ }
+  if (!/^sounds-[\w-]{4,40}$/.test(id)) {
+    id = 'sounds-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    try { localStorage.setItem('bfx-libid', id); } catch (e) { /* one id for this visit */ }
+  }
+  return id;
+}
+function sendAllToKurator() {
+  if (!LIB.length) return;
+  sendToKurator(LIB.slice(), null, libSession(), sessionZipName(SESSION.project.trim()), 'sound');
 }
 function utf8Bytes(s) { return new TextEncoder().encode(s); }
 function sendSounds(list, group) {
@@ -1602,6 +1618,8 @@ function renderRV() {
   $('rv-save').disabled = !takes.length;
   $('rv-share').hidden = !(takes.length && canShareFiles());
   $('rv-wb').hidden = !(takes.length && WB.url);
+  $('rv-kur').hidden = !(takes.length && kuratorHere());
+  $('rv-note-kur').hidden = !kuratorHere(); $('rv-note-wb').hidden = !WB.url;
   recButtons();
 }
 function canShareFiles() {
@@ -1641,7 +1659,8 @@ function wantLocation() {
 
 /* ---------- session zips: what Kurator unpacks ---------- */
 /* WAVs, a .xmp sidecar each, and ballistic-session.json: the plan and, per file, the facts Kurator files it by */
-function sessionZip(list, plan) {
+/* sid: the session these files belong to. Kurator puts later zips of a session into the folder of its first one */
+function sessionZip(list, plan, sid) {
   var used = {}, files = [], entries = [];
   list.forEach(function (s) {
     var n = safeName(s.name), k = 2;
@@ -1653,7 +1672,7 @@ function sessionZip(list, plan) {
       origin: m.origin || '', device: m.device || '', take: m.take || null, plan: m.plan ? m.plan.id : '', shot: m.shot ? m.shot.id : '', session: m.session || '',
       location: m.location || null, keywords: B.keywordPaths(fm) });
   });
-  var manifest = { format: 'ballistic-session', version: 1, app: 'Ballistic Foley Lab', saved: isoLocal(new Date()), session: RV.session ? RV.session.id : '',
+  var manifest = { format: 'ballistic-session', version: 1, app: 'Ballistic Foley Lab', saved: isoLocal(new Date()), session: sid || '',
     plan: plan ? { id: plan.id, name: plan.name, project: plan.project, chips: plan.chips, shots: plan.shots.map(function (s) { return { id: s.id, name: s.name, tags: s.tags, takes: s.takes, ucs: s.ucs, notes: s.notes }; }) } : null,
     files: entries };
   files.push({ name: 'ballistic-session.json', data: utf8Bytes(JSON.stringify(manifest, null, 1)) });
@@ -1670,7 +1689,7 @@ function sessionZipName(project) {
 }
 function saveSession(share) {
   var takes = sessionTakes(); if (!takes.length) return;
-  var p = curPlan(), name = sessionZipName(p ? p.project || p.name : SESSION.project.trim()), zip = sessionZip(takes, p);
+  var p = curPlan(), name = sessionZipName(p ? p.project || p.name : SESSION.project.trim()), zip = sessionZip(takes, p, RV.session.id);
   if (share) {
     var f = new File([zip], name, { type: 'application/zip' });
     navigator.share({ files: [f], title: name }).then(function () { setStatus('Shared ' + name + '.'); }).catch(function (e) { if (!e || e.name !== 'AbortError') setStatus('Sharing did not work here. Use Save session.'); });
@@ -1813,6 +1832,10 @@ function wireRV() {
   $('rv-save').addEventListener('click', function () { saveSession(false); });
   $('rv-share').addEventListener('click', function () { saveSession(true); });
   $('rv-wb').addEventListener('click', function () { var t = sessionTakes(); if (t.length) sendSounds(t, sessionGroup()); });
+  $('rv-kur').addEventListener('click', function () {
+    var t = sessionTakes(), p = curPlan();
+    if (t.length) sendToKurator(t, p, RV.session.id, sessionZipName(p ? p.project || p.name : SESSION.project.trim()), 'take');
+  });
   $('rv-addtag').addEventListener('submit', function (e) {
     e.preventDefault();
     var n = addChips($('rv-newtag').value);
@@ -2062,6 +2085,94 @@ window.addEventListener('message', function (e) {
   }
 });
 
+/* ---------- Send to Kurator: Kurator on this computer ----------
+   A page on the web cannot simply call Kurator at 127.0.0.1 (Safari refuses, Chrome and Firefox ask), but it can
+   open it: Ballistic opens Kurator's /receive page in a window named "kurator" and posts the session zip to it, as
+   with SFX Workbench. That page, on Kurator's own address, hands it to Kurator, which unpacks and tags it
+   (kurator/sessions.py there). It answers only pages from the Ballistic address in its Settings.
+     here -> Kurator: { type: 'kurator:import', v: 1, id, name, what, bytes }
+     Kurator -> here: { type: 'kurator:ready', v: 1 }, then { type: 'kurator:imported' | 'kurator:failed', v: 1, id, ... } */
+var KUR = { url: 'http://127.0.0.1:8765', win: null, ready: false, stale: false, pending: null, timer: 0 };
+function loopbackOrigin(s) {
+  try { var u = new URL(s); return /^https?:$/.test(u.protocol) && /^(127\.0\.0\.1|localhost|\[::1\])$/.test(u.hostname) ? u.origin : null; } catch (e) { return null; }
+}
+function loadKurator() { try { var o = loopbackOrigin(localStorage.getItem('bfx-kurator') || ''); if (o) KUR.url = o; } catch (e) { /* the default port */ } }
+/* Kurator opens Ballistic with #kurator=<its address>: remembered, and only ever a loopback address */
+function kuratorFromLink() {
+  var m = /([#&])kurator=([^&]*)/.exec(location.hash);
+  if (!m) return;
+  var rest = location.hash.replace(/[#&]kurator=[^&]*/, '').replace(/^#?&?/, '');
+  history.replaceState(null, '', location.pathname + location.search + (rest ? '#' + rest : ''));
+  var o = null; try { o = loopbackOrigin(decodeURIComponent(m[2])); } catch (e) { o = null; }
+  if (!o) return;
+  KUR.url = o; KUR.win = null;
+  try { localStorage.setItem('bfx-kurator', o); } catch (e) { /* for this visit */ }
+}
+/* only on a computer, from the site or a local server: the offline file and the Claude viewer have no address Kurator could trust */
+function kuratorHere() {
+  if (inViewer || !/^https?:$/.test(location.protocol)) return false;
+  var mobile = navigator.userAgentData ? navigator.userAgentData.mobile : /Android|iPhone|iPod|Mobile/i.test(navigator.userAgent);
+  return !mobile;
+}
+function openKurator() {
+  var w = KUR.win && !KUR.win.closed ? KUR.win : null;
+  if (w && KUR.stale) { try { w.location.href = KUR.url + '/receive'; } catch (e) { w = null; } KUR.ready = false; }
+  if (!w) {
+    w = window.open('', 'kurator');
+    if (!w) { setStatus('The browser blocked the new window. Allow pop-ups for this site, then send again.'); return false; }
+    var fresh; try { fresh = w.location.href === 'about:blank'; } catch (e) { fresh = false; }
+    if (fresh || KUR.stale) { try { w.location.href = KUR.url + '/receive'; } catch (e) { /* answered by the timeout */ } }
+    KUR.ready = !(fresh || KUR.stale);
+  }
+  KUR.stale = false; KUR.win = w;
+  return true;
+}
+function postKurator() {
+  var m = {}, k; for (k in KUR.pending) if (k !== 'noun') m[k] = KUR.pending[k];
+  try { KUR.win.postMessage(m, KUR.url); } catch (e) { /* answered by "ready" when it loads */ }
+}
+function kuratorWait(ms, text) {
+  clearTimeout(KUR.timer);
+  var msg = KUR.pending;
+  KUR.timer = setTimeout(function () {
+    if (KUR.pending !== msg) return;
+    KUR.pending = null; KUR.stale = true;
+    setStatus(text);
+  }, ms);
+}
+var KUR_GONE = 'Kurator did not answer. Start Kurator on this computer, then send again. If it runs on another port, open Ballistic from Kurator (Settings, Recording sessions, Open Ballistic Foley Lab) once.';
+function sendToKurator(list, plan, sid, name, noun) {
+  var what = plural(list.length, noun);
+  if (!list.length || !kuratorHere()) return;
+  /* the window has to open inside the click, before the zip is made */
+  if (!openKurator()) return;
+  var zip = sessionZip(list, plan, sid);
+  KUR.pending = { type: 'kurator:import', v: 1, id: 'bfl-' + Date.now().toString(36), name: name, what: what, noun: noun,
+    bytes: zip.byteOffset || zip.byteLength !== zip.buffer.byteLength ? zip.slice().buffer : zip.buffer };
+  setStatus('Sending ' + what + ' to Kurator');
+  if (KUR.ready) { postKurator(); kuratorWait(120000, 'Kurator did not say whether it took the ' + what + '. Look in Kurator, or send again: it does not add a take twice.'); }
+  else kuratorWait(15000, KUR_GONE);
+}
+window.addEventListener('message', function (e) {
+  if (e.origin !== KUR.url || !e.data || e.data.v !== 1) return;
+  var d = e.data;
+  if (d.type === 'kurator:ready') {
+    if (e.source) KUR.win = e.source;
+    KUR.ready = true;
+    if (KUR.pending) { postKurator(); kuratorWait(120000, 'Kurator did not say whether it took the ' + KUR.pending.what + '. Look in Kurator, or send again: it does not add a take twice.'); }
+    return;
+  }
+  if (!KUR.pending || d.id !== KUR.pending.id || (d.type !== 'kurator:imported' && d.type !== 'kurator:failed')) return;
+  clearTimeout(KUR.timer);
+  var what = KUR.pending.what, noun = KUR.pending.noun; KUR.pending = null;
+  if (d.type === 'kurator:failed') { setStatus('Kurator could not take the ' + what + ': ' + String(d.error || 'no reason given').slice(0, 200)); return; }
+  var folder = String(d.folder || '').split(/[\\/]/).filter(Boolean).pop() || '';
+  if (d.already) setStatus('Kurator has these ' + what + ' already: nothing new.');
+  else if (!d.files) setStatus('All ' + what + ' were in Kurator already' + (folder ? ', in ' + folder : '') + '.');
+  else setStatus('Sent to Kurator: ' + plural(d.files, 'new ' + noun) + ' in ' + folder + (d.skipped ? ' (' + d.skipped + ' there already)' : '') +
+    (d.plan ? ', counted against the plan ' + String(d.plan).slice(0, 80) : '') + '.');
+});
+
 function start(saved) {
   var pr = B.PRESETS[0], ap = B.ACTION_PRESETS[1];
   st.p = B.merge(B.DEFAULTS, pr.p); st.a = B.merge(B.ACTION_DEFAULTS, ap.a);
@@ -2069,7 +2180,7 @@ function start(saved) {
     st.p = B.merge(B.DEFAULTS, saved.p); st.a = B.merge(B.ACTION_DEFAULTS, saved.a);
     st.sp = saved.sp || ''; st.ap = saved.ap || ''; st.which = saved.which === 'raw' ? 'raw' : 'fx'; st.seed = saved.seed || st.seed;
   }
-  loadSession(); deviceInfo(); loadRV();
+  loadSession(); deviceInfo(); loadRV(); loadKurator(); kuratorFromLink();
   var restore = restoreSounds();
   refreshColors(); buildControls();
   syncControls(); startWorker();
@@ -2103,7 +2214,7 @@ function start(saved) {
     if (LIB.length) rerender(false);
     planFromLink();
   });
-  window.addEventListener('hashchange', planFromLink);
+  window.addEventListener('hashchange', function () { kuratorFromLink(); planFromLink(); });
   var hot = window.claude && window.claude.hot;
   if (hot && hot.snapshot) hot.snapshot(function () { return { p: st.p, a: st.a, sp: st.sp, ap: st.ap, which: st.which, seed: st.seed }; });
 }

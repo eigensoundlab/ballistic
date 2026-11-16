@@ -64,6 +64,17 @@ strength scales per source type. The triggering recording is a fifth layer group
 stem), so the stems still add up. A fit is `job({ fit: true, ... }, post)`: it renders `FIT_TRIES` values of one
 parameter and calls `post` with progress, which the worker forwards to the page.
 
+## Sending to Kurator
+
+On the same computer, `sendToKurator()` in `src/app.js` opens Kurator's `/receive` page (address in `KUR.url`,
+default `http://127.0.0.1:8765`, set by a `#kurator=` link from Kurator and kept in localStorage `bfx-kurator`; only
+loopback addresses are taken) in a window named `kurator` and posts `{ type: 'kurator:import', v: 1, id, name, what,
+bytes }` with the session zip. It answers `{ type: 'kurator:ready', v: 1 }` when loaded, then `kurator:imported` (files,
+skipped, folder, already, plan) or `kurator:failed` (error). A page cannot call Kurator at 127.0.0.1 directly (Safari
+blocks it, Chrome and Firefox ask), so keep it window to window. The zip's `session` is the Record session's id, or
+`libSession()` for Your sounds: Kurator adds a later zip of a session to the same folder and skips takes it has. The
+receiver is `kurator/static/js/receive.js` and `kurator/sessions.py` in Kurator; change the message only together.
+
 ## Sending to SFX Workbench
 
 `sendToWorkbench()` in `src/app.js` opens or reuses a window named `sfxworkbench` on the same origin and posts

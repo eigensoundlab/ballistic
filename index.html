@@ -303,11 +303,13 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
     <div class="toolrow">
       <button type="button" class="btn" id="rv-save">Save session</button>
       <button type="button" class="btn" id="rv-share" hidden>Share session</button>
+      <button type="button" class="btn" id="rv-kur" hidden>Send to Kurator</button>
       <button type="button" class="btn" id="rv-wb" hidden>Send to SFX Workbench</button>
       <button type="button" class="btn" id="rv-new">New session</button>
     </div>
-    <p class="note">For Kurator: Save session (or Share session, on a phone) writes one zip with the takes as WAV, their date, tags and notes, a .xmp sidecar each, and a list for Kurator. Put it in a folder your computer syncs (Syncthing, iCloud Drive, Google Drive, OneDrive) that is in Kurator's library: Kurator unpacks it, tags the sounds and counts the takes against the plan. Kurator runs on your computer, so a phone cannot reach it directly.</p>
-    <p class="note">For SFX Workbench: Send to SFX Workbench opens it in a new tab with this session's takes, their tags kept, in a library group named after the project and day.</p>
+    <p class="note" id="rv-note-kur">For Kurator on this computer: Send to Kurator hands the session to Kurator, which puts the takes in its library with their tags and counts them against the plan. The first time, it opens a Kurator tab. Send again after more takes: only the new ones are added.</p>
+    <p class="note">For Kurator from a phone: Save session (or Share session) writes one zip with the takes as WAV, their date, tags and notes, a .xmp sidecar each, and a list for Kurator. Put it in a folder your computer syncs (Syncthing, iCloud Drive, Google Drive, OneDrive) that is in Kurator's library: Kurator unpacks it the same way. Kurator runs on your computer, so a phone cannot reach it directly.</p>
+    <p class="note" id="rv-note-wb">For SFX Workbench: Send to SFX Workbench opens it in a new tab with this session's takes, their tags kept, in a library group named after the project and day.</p>
   </div>
   <div class="rv-in" id="pe" hidden>
     <div class="rv-top">

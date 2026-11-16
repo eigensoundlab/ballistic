@@ -112,6 +112,14 @@ and that is in Kurator's library: Kurator unpacks it next to itself, tags the so
 takes against the plan. Kurator runs on your computer, so the synced folder is how a phone reaches it. *Save all* under
 Your sounds writes the same kind of zip.
 
+**Send to Kurator** (on a computer where Kurator runs) hands the session straight to Kurator: the first time it opens a
+Kurator tab, which takes the zip and puts the takes into the library folder set in Kurator's Settings (by default
+*Ballistic Foley Lab* in the first library folder), each session in a folder of its own, tagged and counted against the
+plan. Send again after more takes and only the new ones are added, to the same folder; **Send all to Kurator** under Your
+sounds skips the takes Kurator already has. Kurator answers only the Ballistic address in its Settings. If Kurator runs
+on another port than 8765, open Ballistic once from Kurator (Settings, Recording sessions, *Open Ballistic Foley Lab*,
+or *Open in Ballistic* in a plan): the link tells Ballistic where Kurator is.
+
 **Send to SFX Workbench** (on the site) opens SFX Workbench in a new tab with the session's takes, in a library group
 named after the project and day (*Forest walk 2026-11-15*), with their date and tags kept in the files. What you make
 from them there keeps them too, and goes back to Kurator through Kurator's own SFX Workbench link.
