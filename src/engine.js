@@ -2190,6 +2190,227 @@ function liquidSignal(pl, p, o, rnd, ns) {
   return { mid: mid, side: side };
 }
 
+/* ---------- mechanisms ----------
+   A door, lid, turret or switch is a drive, a path, a panel and two ends. The drive follows the speed profile: an
+   electric motor's slot and gear-mesh tones rise and fall with its speed, a hydraulic pump holds its pitch and works
+   harder under load, a pneumatic cylinder hisses while it moves and vents when it stops. The path rumbles on rails
+   or a slewing ring, and a dry hinge creaks by stick-slip, one slip each time the pin turns through a slip length,
+   so the creak climbs with speed. The panel rings at its plate modes, shaken by the drive. The ends are struck:
+   latches, end stops, seals and bolts, with the energy the panel still carries. */
+var MECH_MATS = {
+  steel: { spec: 'steel', rho: 7800, h: 0.004 },
+  aluminium: { spec: { f0: 600, ratios: [1, 1.58, 2.24, 2.92, 3.6, 4.71, 5.4, 6.8, 8.93], t60: 0.9, slope: 0.25, contact: 0.0001, eff: 0.9,
+    noise: { dur: 0.004, hp: 1800, lp: 16000, gain: 0.6 }, grains: null }, rho: 2700, h: 0.003 },
+  wood: { spec: 'wood', rho: 600, h: 0.025 },
+  plastic: { spec: { f0: 380, ratios: [1, 1.9, 2.8, 4.1, 5.5], t60: 0.06, slope: 0.4, contact: 0.0004, eff: 0.6,
+    noise: { dur: 0.006, hp: 800, lp: 9000, gain: 1 }, grains: null }, rho: 1200, h: 0.004 }
+};
+/* a hundredth of the energy the panel carries into a stop reaches its modes; the rest goes into frame and hinges */
+var STOP_EFF = 0.01, MECH_STOPS = { hard: { e: 1, lp: 0 }, rubber: { e: 0.35, lp: 1200 }, damped: { e: 0.15, lp: 400 } };
+function smoothstep(x) { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); }
+/* white noise through two low-pass and one high-pass pole, at unit rms */
+function unitNoise(n, rnd, lp, hp) {
+  var b = new Float32Array(n), e = 0, i;
+  for (i = 0; i < n; i++) b[i] = rnd() * 2 - 1;
+  if (lp) { onePoleLP(b, lp); onePoleLP(b, lp); }
+  if (hp) onePoleHP(b, hp);
+  for (i = 0; i < n; i++) e += b[i] * b[i];
+  scale(b, 1 / (Math.sqrt(e / n) || 1));
+  return b;
+}
+/* speed profile, unit peak: ramps up over rs, cruises, ramps down over re to 'end', the speed left at the stop */
+function mechShape(q) {
+  var d = q.mcDrive, close = q.mcAction === 'close';
+  if (q.mcType === 'switch') return { k: 0, rs: 0.3, re: 0, end: 1 };
+  if (d === 'electric') return { k: 0, rs: 0.2, re: 0.2, end: 0.12 };
+  if (d === 'hydraulic') return { k: 0, rs: 0.12, re: 0.3, end: 0.05 };
+  if (d === 'pneumatic') return { k: 0, rs: 0.04, re: 0.1, end: 0.35 };
+  /* by hand: a push that carries a closing door into its frame, or a swing that dies away as it opens */
+  return close ? { k: 1, rs: 0, re: 0, end: 1 } : { k: 2, rs: 0, re: 0, end: 0.05 };
+}
+function mechU(sh, x) {
+  if (sh.k === 1) return 0.4 + 0.6 * x;
+  if (sh.k === 2) return Math.max(sh.end, Math.pow(Math.sin(Math.PI * x), 0.7));
+  var u = sh.rs > 0 ? smoothstep(x / sh.rs) : 1;
+  if (sh.re > 0 && x > 1 - sh.re) u = Math.min(u, sh.end + (1 - sh.end) * smoothstep((1 - x) / sh.re));
+  return u;
+}
+function planMech(q, grnd) {
+  var mm = MECH_MATS[q.mcMat] || MECH_MATS.steel, M = Math.max(q.mcMass, 0.005), T = Math.max(q.mcTime, 0.005), type = q.mcType, sh = mechShape(q);
+  var L = clamp(Math.sqrt(M / (mm.rho * mm.h)), 0.03, 6), S, k, n = Math.max(2, Math.ceil(T * 1000) + 1), u = new Float32Array(n), area = 0;
+  for (k = 0; k < n; k++) { u[k] = mechU(sh, k / (n - 1)); area += u[k] * (k === 0 || k === n - 1 ? 0.5 : 1); }
+  area /= n - 1;
+  /* S in metres along the path; a turning part counts at its edge */
+  var Rr = type === 'rotate' ? clamp(0.15 * Math.cbrt(M), 0.02, 2) : L, ang = q.mcAngle * Math.PI / 180;
+  if (type === 'slide') S = q.mcStroke; else if (type === 'switch') S = 0.008 * Math.cbrt(M / 0.02); else S = ang * Rr;
+  var vmax = S / T / area, vel = new Float32Array(n);
+  for (k = 0; k < n; k++) vel[k] = vmax * u[k];
+  /* inertia seen at the edge: a door about its hinge, M/3; a turret as a disc, M/2; a slide carries all of it */
+  var Meff = type === 'hinge' ? M / 3 : type === 'rotate' ? M / 2 : M, mu = type === 'slide' ? 0.05 : 0.01, Pk = 0, pw = new Float32Array(n);
+  for (k = 0; k < n; k++) {
+    var acc = (vel[Math.min(n - 1, k + 1)] - vel[Math.max(0, k - 1)]) / (2 * T / (n - 1));
+    pw[k] = Math.abs((Meff * acc + mu * M * GRAV) * vel[k]);
+    if (pw[k] > Pk) Pk = pw[k];
+  }
+  var pre = q.mcDrive === 'hydraulic' ? 0.35 : 0.08, close = q.mcAction === 'close', bolt = q.mcLatch === 'bolt';
+  if (bolt && !close) pre += 0.45;
+  var vEnd = vmax * sh.end, Eend = 0.5 * Meff * vEnd * vEnd, mt = mm.spec === 'steel' ? MATERIALS.steel : mm.spec === 'wood' ? MATERIALS.wood : mm.spec;
+  var pl = { type: type, drive: q.mcDrive, close: close, M: M, Meff: Meff, T: T, n: n, vel: vel, pw: pw, Pk: Math.max(Pk, 0.5), vmax: vmax, S: S, L: L, Rr: Rr,
+    pre: pre, t0: pre, tEnd: pre + T, vEnd: vEnd, Eend: Eend, mm: mm, sc: clamp(0.6 / L, 0.15, 12), r: Math.max(0.3, q.mcDist), latch: q.mcLatch,
+    wear: clamp(q.mcWear, 0, 1), rpm: q.mcRpm, stop: MECH_STOPS[q.mcStop] || MECH_STOPS.hard, ang: ang };
+  pl.f0 = mt.f0 * pl.sc;
+  pl.fMotor = q.mcRpm / 60;
+  pl.tone = q.mcDrive === 'electric' ? 13 * pl.fMotor : q.mcDrive === 'hydraulic' ? 225 : 0;
+  pl.creak = type === 'hinge' && pl.wear > 0.15 ? vmax / pl.L * 0.006 / 15e-6 : 0;
+  pl.dur = pl.tEnd + (bolt && close ? 0.75 : 0.3) + (q.mcDrive === 'pneumatic' ? 0.9 : q.mcDrive === 'hydraulic' ? 0.5 : 0) + Math.min(mt.t60, 1.5) + 0.2;
+  return pl;
+}
+/* speed at time t, by linear reading of the millisecond table */
+function mechVel(pl, t) {
+  var x = (t - pl.t0) / pl.T * (pl.n - 1);
+  if (x < 0 || x > pl.n - 1) return 0;
+  var i = Math.floor(x), f = x - i;
+  return i + 1 < pl.n ? pl.vel[i] + (pl.vel[i + 1] - pl.vel[i]) * f : pl.vel[i];
+}
+function mechPow(pl, t) {
+  var x = (t - pl.t0) / pl.T * (pl.n - 1);
+  if (x < 0 || x > pl.n - 1) return 0;
+  return pl.pw[Math.min(pl.n - 1, Math.round(x))];
+}
+function addStrike(buf, t, spec, E, sc, rnd, lp, g) {
+  var h = modalHit(spec, E, sc, rnd), n0 = Math.round(t * FS), i;
+  if (lp) { onePoleLP(h, lp); onePoleLP(h, lp); }
+  for (i = 0; i < h.length && n0 + i < buf.length; i++) if (n0 + i >= 0) buf[n0 + i] += h[i] * g;
+}
+function mechLayers(pl, p, o, rnd, layers, ev, lab) {
+  var ns = Math.ceil(pl.dur * FS), r = pl.r, tA = o.t0 + r / C, i, k, t, drive = new Float32Array(ns), path = new Float32Array(ns), body = new Float32Array(ns), ends = new Float32Array(ns);
+  var spec = pl.mm.spec, w, v, ld;
+  /* ---- drive ---- */
+  if (pl.drive === 'electric') {
+    /* a gearmotor near 0.003 Pa per root watt at 1 m; slot tone, two gear meshes, shaft hum, brush hiss */
+    var Ae = 0.003 * Math.sqrt(pl.Pk), part = [[12, 1, 0], [24, 0.4, 0], [13, 1.4, 1], [26, 0.5, 1], [13 / 4.1, 0.8, 1], [1, 0.3, 0]], ph = new Float64Array(part.length);
+    var hiss = unitNoise(ns, rnd, 9000, 2000);
+    for (i = 0; i < ns; i++) {
+      t = i / FS; v = mechVel(pl, t); w = v / pl.vmax; ld = 0.3 + 0.7 * mechPow(pl, t) / pl.Pk;
+      var y = 0, fr = pl.fMotor * w;
+      for (k = 0; k < part.length; k++) {
+        var f = fr * part[k][0];
+        ph[k] += f / FS;
+        if (f < 18000 && f > 15) y += part[k][1] * (part[k][2] ? ld : 1) * fsin(ph[k]);
+      }
+      drive[i] = Ae * (y * Math.min(1, w * 6) + 0.3 * hiss[i] * w);
+    }
+    if (pl.M > 50) { addStrike(drive, pl.t0 - 0.04, 'steel', 0.002, 8, rnd, 0, 1); addStrike(drive, pl.tEnd + 0.06, 'steel', 0.002, 8, rnd, 0, 1); }
+  } else if (pl.drive === 'hydraulic') {
+    /* the power pack spools up before the valve opens; the pump's nine pistons at 1500 rev/min give 225 Hz */
+    var Ah = 0.004 * Math.sqrt(pl.Pk / 0.6), ph2 = new Float64Array(6), flow = unitNoise(ns, rnd, 4000, 800), relief = unitNoise(ns, rnd, 4500, 2500);
+    var tOn = pl.t0 - 0.3, tOff = pl.tEnd + 0.15;
+    for (i = 0; i < ns; i++) {
+      t = i / FS; v = mechVel(pl, t); w = v / pl.vmax;
+      var sp = t < tOn ? 0 : t < tOn + 0.25 ? smoothstep((t - tOn) / 0.25) : t < tOff ? 1 : Math.max(0, 1 - (t - tOff) / 0.3);
+      var pr = 0.4 + 0.6 * mechPow(pl, t) / pl.Pk + (t > pl.tEnd && t < pl.tEnd + 0.25 ? 0.8 : 0), y2 = 0;
+      for (k = 0; k < 6; k++) { ph2[k] += 225 * (k + 1) * sp / FS; y2 += fsin(ph2[k]) / Math.pow(k + 1, 0.7); }
+      drive[i] = Ah * (sp * pr * y2 + 0.8 * flow[i] * w * w + (t > pl.tEnd && t < pl.tEnd + 0.25 ? 1.5 * relief[i] * Math.sin(Math.PI * (t - pl.tEnd) / 0.25) : 0));
+    }
+    addStrike(drive, pl.t0 - 0.02, 'steel', 0.004, 5, rnd, 0, 1); addStrike(drive, tOff - 0.03, 'steel', 0.004, 5, rnd, 0, 1);
+  } else if (pl.drive === 'pneumatic') {
+    /* air at 6 bar fills a bore sized to move the panel; it hisses in, cushions at the end and vents after the stop,
+       the vent at 0.01 Pa per root joule of the air let go */
+    var Fm = pl.Meff * pl.vmax / (0.05 * pl.T) + 0.05 * pl.M * GRAV + 50, Vc = Fm / 6e5 * Math.max(pl.S, 0.01), Ap = 0.01 / 3 * Math.sqrt(6e5 * Vc);
+    var air = unitNoise(ns, rnd, 12000, 2000), tV = pl.tEnd + 0.12;
+    for (i = 0; i < ns; i++) {
+      t = i / FS; v = mechVel(pl, t); w = v / pl.vmax;
+      var on = t >= pl.t0 && t <= pl.tEnd ? 0.3 + 0.7 * w + (t > pl.tEnd - 0.1 * pl.T ? 0.6 : 0) : 0;
+      var vent = t >= tV ? Math.exp(-(t - tV) / 0.22) * Math.min(1, (t - tV) / 0.004) : 0;
+      drive[i] = Ap * air[i] * (0.4 * on + 3 * vent);
+    }
+    addStrike(drive, pl.t0 - 0.01, 'steel', 0.003, 6, rnd, 0, 1);
+  }
+  /* ---- path ---- */
+  var M2 = Math.sqrt(pl.M);
+  if (pl.type === 'slide' || pl.type === 'rotate') {
+    var rum = unitNoise(ns, rnd, 0, 0), lpS = 0, wheel = 0, dWheel = pl.type === 'slide' ? 0.06 : 0.02, zr = pl.type === 'rotate' ? Math.round(60 + 140 * Math.min(1, pl.Rr)) : 0, gearPh = 0;
+    for (i = 0; i < ns; i++) {
+      t = i / FS; v = mechVel(pl, t); w = v / pl.vmax;
+      lpS = rum[i] + (lpS - rum[i]) * Math.exp(-TAU * (150 + 600 * w) / FS);
+      path[i] += 0.03 * M2 * v * lpS;
+      /* wheels with a flat spot knock once a turn; a turret's ring gear clicks once a tooth */
+      wheel += v / (Math.PI * dWheel) / FS;
+      if (wheel >= 1) { wheel -= 1; if (pl.wear > 0.05) addN(path, t, 0.0004, 0.01 * pl.wear * M2 * v); }
+      if (zr) { gearPh += zr * v / pl.Rr / TAU / FS; if (gearPh >= 1) { gearPh -= 1; addN(path, t, 0.002, 0.003 * M2 * w); } }
+    }
+  } else if (pl.creak > 0) {
+    /* stick-slip at the hinge pin: each slip excites three creak resonances; a worn hinge slips unevenly */
+    var cf = [450 * Math.sqrt(pl.sc), 1100 * Math.sqrt(pl.sc), 2300 * Math.sqrt(pl.sc)], cz = [0, 0, 0, 0, 0, 0], cr = [], cc = [], slip = 0, Ac = 0.02 * M2 * (pl.wear - 0.15) / 0.85;
+    var cg = [];
+    for (k = 0; k < 3; k++) { cr.push(Math.exp(-Math.PI * cf[k] / (25 * FS))); cc.push(2 * cr[k] * Math.cos(TAU * Math.min(cf[k], 18000) / FS)); cg.push(Math.sin(TAU * Math.min(cf[k], 18000) / FS)); }
+    for (i = 0; i < ns; i++) {
+      t = i / FS; v = mechVel(pl, t);
+      var x = 0;
+      slip += v / pl.L * 0.006 / 15e-6 / FS;
+      if (slip >= 1) { slip -= 1 + pl.wear * 0.1 * (rnd() - 0.5); x = Ac * (0.8 + 0.4 * rnd()); }
+      var y3 = 0;
+      for (k = 0; k < 3; k++) { var yk = cc[k] * cz[2 * k] - cr[k] * cr[k] * cz[2 * k + 1] + x * cg[k]; cz[2 * k + 1] = cz[2 * k]; cz[2 * k] = yk; y3 += yk / (k + 1); }
+      path[i] = y3;
+    }
+  }
+  /* ---- body: the panel's lowest modes shaken by drive and path, and a loose cover that rattles ---- */
+  var mt = spec === 'steel' ? MATERIALS.steel : spec === 'wood' ? MATERIALS.wood : spec, bz = [0, 0, 0, 0, 0, 0, 0, 0];
+  /* input gains 2(1 - r) sin w give each mode a peak gain of one, whatever its pitch */
+  var bf = [], br = [], bc = [], bg = [];
+  for (k = 0; k < 4; k++) { bf.push(Math.min(pl.f0 * mt.ratios[k], 15000)); br.push(Math.exp(-Math.PI * bf[k] / (20 * FS))); bc.push(2 * br[k] * Math.cos(TAU * bf[k] / FS)); bg.push(2 * (1 - br[k]) * Math.sin(TAU * bf[k] / FS)); }
+  for (i = 0; i < ns; i++) {
+    var xin = drive[i] + path[i], yb = 0;
+    for (k = 0; k < 4; k++) { var ybk = bc[k] * bz[2 * k] - br[k] * br[k] * bz[2 * k + 1] + xin * bg[k]; bz[2 * k + 1] = bz[2 * k]; bz[2 * k] = ybk; yb += ybk; }
+    body[i] = yb * 0.5;
+  }
+  if (pl.wear > 0.3) {
+    var rate = 30 * (pl.wear - 0.3) / 0.7;
+    for (i = 0; i < ns; i += 48) {
+      t = i / FS; w = mechVel(pl, t) / pl.vmax;
+      var c1 = rnd(), c2 = rnd();
+      if (c1 < rate * w * 0.001) dampedSine(body, t, 2000 + 2000 * c2, 8, 0.004 * M2);
+    }
+  }
+  /* ---- ends ---- */
+  /* a latch near 80 dB at 1 m, a light switch near 70 */
+  var Elatch = 0.001 * Math.sqrt(1 + pl.M / 50);
+  if (pl.type === 'switch') {
+    addStrike(ends, pl.t0, spec, 0.0002 * Math.sqrt(pl.M / 0.02), pl.sc * 4, rnd, 0, 1);
+    addStrike(ends, pl.tEnd, spec, 0.001 * Math.sqrt(pl.M / 0.02), pl.sc * 4, rnd, 0, 1);
+  } else {
+    if (!pl.close && pl.latch !== 'none') addStrike(ends, pl.t0 - 0.05, 'steel', Elatch * 0.5, 6, rnd, 0, 1);
+    if (!pl.close && pl.latch === 'bolt') { boltInto(ends, pl.t0 - 0.45, pl, rnd); }
+    addStrike(ends, pl.tEnd, spec, Math.max(pl.Eend * STOP_EFF * pl.stop.e, 1e-6), pl.sc, rnd, pl.stop.lp, 1);
+    if (pl.close && pl.stop.lp === 1200) {
+      /* the seal squeezes the air out of the gap */
+      noiseBurst(ends, pl.tEnd + 0.002, 0.03, 60, 500, 0.02 * pl.L * pl.L * pl.vEnd, rnd, 0.004);
+    }
+    if (pl.close && pl.latch === 'latch') addStrike(ends, pl.tEnd + 0.015, 'steel', Elatch, 6, rnd, 0, 1);
+    if (pl.close && pl.latch === 'bolt') boltInto(ends, pl.tEnd + 0.3, pl, rnd);
+  }
+  var bufs = [drive, path, body, ends], gs = [o.g1, o.g2, o.g3, o.g4];
+  for (k = 0; k < 4; k++) {
+    if (!(gs[k] > 0)) continue;
+    var b = bufs[k];
+    for (i = 0; i < ns; i++) b[i] /= r;
+    postLayer(b, r, o.ground);
+    layers.push({ m: b, t: tA, pan: o.pan, g: gs[k] });
+  }
+  ev.push({ k: 'launch', t: tA + pl.t0, label: lab ? (pl.type === 'switch' ? 'press' : pl.drive === 'manual' ? 'moves' : 'drive') : '' });
+  ev.push({ k: 'impact', t: tA + pl.tEnd, label: lab ? (pl.type === 'switch' ? 'snap' : 'stop') : '' });
+}
+/* a motor-driven lock bolt: a short whir, then the bolt seats */
+function boltInto(buf, t, pl, rnd) {
+  var n = Math.round(0.18 * FS), n0 = Math.round(t * FS), ph = 0, i;
+  for (i = 0; i < n && n0 + i < buf.length; i++) {
+    var x = i / n, f = 900 * (0.4 + 0.6 * Math.sin(Math.PI * x));
+    ph += f / FS;
+    if (n0 + i >= 0) buf[n0 + i] += 0.02 * fsin(ph) * Math.sin(Math.PI * x);
+  }
+  addStrike(buf, t + 0.19, 'steel', 0.004 * Math.sqrt(1 + pl.M / 100), 3, rnd, 0, 1);
+}
+
 /* ---------- recordings and impulse responses ----------
    Recordings and impulse responses come in from outside as assets: 48 kHz stereo Float32Arrays, set with setAsset()
    (the page decodes the files; the worker gets a copy). Three synthetic examples stand in until a file is loaded. */
@@ -2530,7 +2751,8 @@ function getHits(id, sens) { return readAsset('hits', id, (+sens).toFixed(2), fu
 var STRENGTH = {
   explosion: { keys: [['exW', 1]] }, implosion: { keys: [['imR0', 1 / 3]] }, destruction: { keys: [['dsMass', 1]] },
   discharge: { keys: [['dcEnergy', 1]] }, blaster: { keys: [['tgEnergy', 1], ['lnEnergy', 1], ['bvChannel', 1], ['bpEnergy', 1]] },
-  field: { keys: [['ffHitE', 1]], gain: true }, liquid: { keys: [['lqHeight', 1]] }
+  field: { keys: [['ffHitE', 1]], gain: true }, liquid: { keys: [['lqHeight', 1]] },
+  mechanism: { keys: [], gain: true }
 };
 var MAX_TRIGGERS = 32;
 
@@ -2830,7 +3052,7 @@ function planRep(p, seed, k, s) {
     if (kind === 'explosion') q.exDist = p.exDist * a; else if (kind === 'destruction') q.dsDist = p.dsDist * a;
     else if (kind === 'implosion') q.imDist = p.imDist * a; else if (kind === 'discharge') q.dcDist = p.dcDist * a;
     else if (kind === 'blaster') { q.miss = p.miss * a; q.bpStiff = p.bpStiff * (1 + j * 0.3 * (grnd() - 0.5)); q.bvSpeed = p.bvSpeed * (1 + j * 0.1 * (grnd() - 0.5)); }
-    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
+    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
     if (kind !== 'projectile') pan = j * 1.4 * (grnd() - 0.5);
   }
   if (kind === 'explosion') out = { ex: planExplosion(q.exW, q.exDist, Math.round(q.exFrags), Math.round(q.exDebris), grnd) };
@@ -2842,6 +3064,7 @@ function planRep(p, seed, k, s) {
   else if (kind === 'blaster') out = { wp: planWeapon(q, grnd) };
   else if (kind === 'field') out = { ff: planField(q, grnd) };
   else if (kind === 'liquid') out = { lq: planLiquid(q, grnd) };
+  else if (kind === 'mechanism') out = { mc: planMech(q, grnd) };
   else if (kind === 'recording') out = { rc: planRecording(q) };
   else {
     out = analyzeProj(q); out.pay = null;
@@ -2896,6 +3119,7 @@ function mixScene(p, seed, only) {
     else if (pl.kind === 'blaster') weaponLayers(pl.wp, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'field') fieldLayers(pl.ff, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'liquid') liquidLayers(pl.lq, q, o, rnd, layers, ev, lab);
+    else if (pl.kind === 'mechanism') mechLayers(pl.mc, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'recording') recordingLayers(pl.rc, q, o, rnd, layers, ev, lab);
     else projLayers(pl, q, o, rnd, layers, ev, lab);
     if (!trig) tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
@@ -3471,6 +3695,8 @@ var DEFAULTS = { kind: 'projectile',
   ffB: 1, ffDens: 1e19, ffBeta: 0.3, ffAngle: 30, ffSaw: 0.4, ffSawT: 1.33, ffChorus: 0.4, ffSurface: 0.4, ffSoliton: 0.4,
   lqMode: 'drop', lqMedium: 'water', lqDrop: 0.0023, lqHeight: 0.07, lqDepth: 0.2, lqMass: 0.2, lqFlow: 0.08, lqVessel: 0.12, lqFill: 0.9,
   lqTemp: 650, lqThick: 0.002, lqRate: 300, lqSize: 1, lqHeat: 1, lqRain: 8, lqDist: 1.5,
+  mcType: 'slide', mcDrive: 'hydraulic', mcAction: 'close', mcMass: 300, mcMat: 'steel', mcStroke: 1.6, mcAngle: 90, mcTime: 1.8, mcStop: 'rubber', mcLatch: 'bolt',
+  mcWear: 0.1, mcRpm: 3000, mcDist: 3,
   seqCount: 1, seqInterval: 0.12, seqJitter: 0.2, seqFrom: 'interval', seqAsset: 'ex:door', seqSens: 0.5, seqDyn: 0.7, seqGuide: -40,
   dsKnock: 'ex:knock', dsLike: 'glass', dsDebris: 'model', grAsset: 'ex:gravel',
   env: 'field', ground: 0.5, trimCrack: 0, trimLaunch: 0, trimWake: 0, trimImpact: 0 };
@@ -3584,7 +3810,22 @@ var PRESETS = [
   { id: 'boil', name: 'Rolling boil, loop', p: { kind: 'liquid', lqMode: 'bubble', lqRate: 120, lqHeat: 1, lqDist: 1, env: 'room' } },
   { id: 'mudpot', name: 'Mud pot, loop', p: { kind: 'liquid', lqMode: 'bubble', lqMedium: 'mud', lqRate: 6, lqDist: 3, env: 'field' } },
   { id: 'lavapool', name: 'Lava pool, loop', p: { kind: 'liquid', lqMode: 'bubble', lqMedium: 'lava', lqRate: 2, lqDist: 6, env: 'cave' } },
-  { id: 'acidvat', name: 'Acid vat, loop', p: { kind: 'liquid', lqMode: 'bubble', lqMedium: 'acid', lqRate: 2500, lqDist: 1.5, env: 'room' } }
+  { id: 'acidvat', name: 'Acid vat, loop', p: { kind: 'liquid', lqMode: 'bubble', lqMedium: 'acid', lqRate: 2500, lqDist: 1.5, env: 'room' } },
+
+  { id: 'hydroclose', name: 'Hydraulic door, closing', p: { kind: 'mechanism', env: 'indoor' } },
+  { id: 'hydroopen', name: 'Hydraulic door, opening', p: { kind: 'mechanism', mcAction: 'open', env: 'indoor' } },
+  { id: 'airdoor', name: 'Pneumatic door', p: { kind: 'mechanism', mcDrive: 'pneumatic', mcAction: 'open', mcMass: 60, mcMat: 'aluminium', mcStroke: 1.2, mcTime: 0.6, mcLatch: 'none', env: 'indoor' } },
+  { id: 'blastdoor', name: 'Blast door', p: { kind: 'mechanism', mcDrive: 'electric', mcMass: 2500, mcStroke: 2.5, mcTime: 6, mcStop: 'damped', mcRpm: 1500, mcWear: 0.3, mcDist: 5, env: 'indoor' } },
+  { id: 'shutter', name: 'Roller shutter', p: { kind: 'mechanism', mcDrive: 'electric', mcAction: 'open', mcMass: 80, mcStroke: 2.5, mcTime: 4, mcStop: 'hard', mcLatch: 'none', mcRpm: 1400, mcWear: 0.7, env: 'urban' } },
+  { id: 'creakdoor', name: 'Creaking door', p: { kind: 'mechanism', mcType: 'hinge', mcDrive: 'manual', mcAction: 'open', mcMass: 25, mcMat: 'wood', mcTime: 2.2, mcStop: 'hard', mcLatch: 'latch', mcWear: 0.8, mcDist: 2, env: 'room' } },
+  { id: 'doorslam', name: 'Door slam', p: { kind: 'mechanism', mcType: 'hinge', mcDrive: 'manual', mcMass: 30, mcMat: 'wood', mcAngle: 70, mcTime: 0.45, mcStop: 'hard', mcLatch: 'latch', mcWear: 0.1, mcDist: 2, env: 'room' } },
+  { id: 'locker', name: 'Locker door', p: { kind: 'mechanism', mcType: 'hinge', mcDrive: 'manual', mcMass: 6, mcTime: 0.35, mcStop: 'hard', mcLatch: 'latch', mcWear: 0.4, mcDist: 1.5, env: 'room' } },
+  { id: 'crateopen', name: 'Crate lid, opening', p: { kind: 'mechanism', mcType: 'hinge', mcDrive: 'manual', mcAction: 'open', mcMass: 4, mcMat: 'wood', mcAngle: 100, mcTime: 0.9, mcStop: 'hard', mcLatch: 'none', mcWear: 0.5, mcDist: 1.2, env: 'room' } },
+  { id: 'crateshut', name: 'Crate lid, dropped shut', p: { kind: 'mechanism', mcType: 'hinge', mcDrive: 'manual', mcMass: 4, mcMat: 'wood', mcAngle: 100, mcTime: 0.35, mcStop: 'hard', mcLatch: 'none', mcDist: 1.2, env: 'room' } },
+  { id: 'turret', name: 'Turret traverse', p: { kind: 'mechanism', mcType: 'rotate', mcDrive: 'electric', mcAction: 'open', mcMass: 400, mcTime: 2.5, mcStop: 'damped', mcLatch: 'none', mcWear: 0.2, mcDist: 4, env: 'field' } },
+  { id: 'servo', name: 'Robot servo', p: { kind: 'mechanism', mcType: 'rotate', mcDrive: 'electric', mcAction: 'open', mcMass: 0.5, mcMat: 'plastic', mcAngle: 60, mcTime: 0.35, mcStop: 'hard', mcLatch: 'none', mcWear: 0.05, mcRpm: 12000, mcDist: 1, env: 'room' } },
+  { id: 'switch', name: 'Switch', p: { kind: 'mechanism', mcType: 'switch', mcDrive: 'manual', mcMass: 0.02, mcMat: 'plastic', mcTime: 0.012, mcLatch: 'none', mcDist: 0.6, env: 'room' } },
+  { id: 'lever', name: 'Heavy lever', p: { kind: 'mechanism', mcType: 'switch', mcDrive: 'manual', mcMass: 1.5, mcTime: 0.08, mcLatch: 'none', mcWear: 0.3, mcDist: 1, env: 'indoor' } }
 ];
 var ACTION_DEFAULTS = { slowmo: 1, punch: 0, weight: 0, drive: 0, bite: 0, tail: 0, swell: 0, width: 0, loud: 0 };
 var ACTION_PRESETS = [
@@ -3609,6 +3850,6 @@ function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for 
 root.BFX = { qrCode: qrCode, qrSvg: qrSvg, packPlan: packPlan, unpackPlan: unpackPlan, setAsset: setAsset, getAsset: getAsset, removeAsset: removeAsset, xmpText: xmpText, ixmlText: ixmlText, keywordPaths: keywordPaths, getIR: getIR, detectHits: detectHits, getHits: getHits, measureModes: measureModes, getModes: getModes,
   getGrains: getGrains, features: features, distance: distance, matchScore: matchScore, posToVal: posToVal, monoOf: monoOf, BAND_HZ: BAND_HZ, MAX_TRIGGERS: MAX_TRIGGERS, FIT_TRIES: FIT_TRIES, triggered: triggered, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
   EXAMPLES: EXAMPLES, REC_MAX_S: REC_MAX_S, IR_MAX_S: IR_MAX_S, renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
-  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
+  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, MECH_MATS: MECH_MATS, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
   ACTION_DEFAULTS: ACTION_DEFAULTS, ACTION_PRESETS: ACTION_PRESETS, merge: merge, _wake: wakeLayer, _modal: modalHit, rng: rng };
 })(typeof self !== 'undefined' ? self : globalThis);

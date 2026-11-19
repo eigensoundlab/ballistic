@@ -32,7 +32,7 @@ test('presets use only known parameters and every source type has presets', () =
     kinds.add(pr.p.kind || 'projectile');
   }
   assert.equal(new Set(B.PRESETS.map(pr => pr.id)).size, B.PRESETS.length, 'preset ids are unique');
-  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid']) assert.ok(kinds.has(k), k);
+  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism']) assert.ok(kinds.has(k), k);
 });
 
 test('every preset renders finite, audible, normalised audio', () => {
@@ -449,4 +449,51 @@ test('viscous liquids swell into a dome that rings on the gas before it bursts',
     assert.ok(dome > lo && dome < hi, `${med} dome ${dome}`);
     assert.ok(peakHz(st[2].L, 0, st[2].L.length, 100, 16000) > 2 * dome, `${med} burst above the dome`);
   }
+});
+
+const mech = o => B.merge(B.DEFAULTS, Object.assign({ kind: 'mechanism', env: 'none', ground: 0 }, o));
+/* the period that best repeats in a stretch, by autocorrelation, as a rate per second */
+function repRate(x, a, b, lo, hi) {
+  let best = -Infinity, bl = 0;
+  for (let lag = Math.floor(FS / hi); lag <= Math.ceil(FS / lo); lag++) {
+    let s = 0, e = 0; for (let i = a; i < b - lag; i++) { s += x[i] * x[i + lag]; e += x[i] * x[i]; }
+    if (s / e > best) { best = s / e; bl = lag; }
+  }
+  return FS / bl;
+}
+
+test('an electric drive whines at its slot and gear-mesh pitches, which follow the speed', () => {
+  const p = mech({ mcType: 'rotate', mcDrive: 'electric', mcMass: 50, mcTime: 3, mcRpm: 3000, mcWear: 0 }), mc = B.analyze(p, 3).mc, r = B.renderRaw(p, 3), x = B.renderStems(p, 3)[0].L;
+  const off = -r.tStart, win = (t, k) => { const a = Math.round((t + off) * FS); return peakHz(x, a, a + Math.round(0.08 * FS), 200, 2000); };
+  const cruise = win(mc.t0 + mc.T / 2, 0), slots = 12 * mc.fMotor, gears = 13 * mc.fMotor;
+  assert.ok(Math.min(Math.abs(cruise / slots - 1), Math.abs(cruise / gears - 1)) < 0.03, `cruise ${cruise} against ${slots} or ${gears}`);
+  /* half way up the ramp the motor turns at half speed, so the tones sit an octave lower */
+  let tHalf = mc.t0; while (B.analyze(p, 3).mc.vel[Math.round((tHalf - mc.t0) * 1000)] < 0.5 * mc.vmax) tHalf += 0.001;
+  const half = win(tHalf - 0.04, 0);
+  assert.ok(half < 0.62 * cruise && half > 0.38 * cruise, `ramp ${half} against cruise ${cruise}`);
+});
+
+test('a dry hinge creaks once per slip length of the pin, so the creak climbs with the swing', () => {
+  const p = mech({ mcType: 'hinge', mcDrive: 'manual', mcAction: 'open', mcMass: 25, mcMat: 'wood', mcTime: 2.2, mcWear: 0.8, mcLatch: 'none' }), mc = B.analyze(p, 3).mc, r = B.renderRaw(p, 3), x = B.renderStems(p, 3)[1].L;
+  const at = t => { const a = Math.round((t - r.tStart) * FS); return repRate(x, a, a + Math.round(0.1 * FS), 40, 1500); };
+  const top = at(mc.t0 + mc.T / 2 - 0.05), slow = at(mc.t0 + 0.12 * mc.T);
+  assert.ok(Math.abs(top / mc.creak - 1) < 0.08, `at top speed ${top} against ${mc.creak}`);
+  assert.ok(slow < 0.75 * top, `early ${slow} against ${top}`);
+  assert.equal(B.analyze(mech({ mcType: 'hinge', mcWear: 0.1 }), 3).mc.creak, 0, 'an oiled hinge is quiet');
+});
+
+test('a slam is louder than a gentle close by the root of the energy it carries into the stop', () => {
+  const peakEnd = q => { const st = B.renderStems(q, 3), r = B.renderRaw(q, 3), x = st[3].L; let pk = 0; for (const v of x) pk = Math.max(pk, Math.abs(v)); return pk * r.peakPa; };
+  const base = { mcType: 'hinge', mcDrive: 'manual', mcMass: 30, mcMat: 'wood', mcAngle: 70, mcStop: 'hard', mcLatch: 'none', mcWear: 0 };
+  const fast = mech(Object.assign({ mcTime: 0.4 }, base)), slow = mech(Object.assign({ mcTime: 1.6 }, base));
+  const Ef = B.analyze(fast, 3).mc.Eend, Es = B.analyze(slow, 3).mc.Eend, ratio = peakEnd(fast) / peakEnd(slow);
+  assert.ok(Math.abs(Ef / Es - 16) < 1e-6, 'four times the speed, sixteen times the energy');
+  assert.ok(ratio > 2.5 && ratio < 6, `peak ratio ${ratio}`);
+});
+
+test('a pneumatic cylinder hisses while it moves and vents after it stops', () => {
+  const p = mech({ mcDrive: 'pneumatic', mcAction: 'open', mcMass: 60, mcMat: 'aluminium', mcStroke: 1.2, mcTime: 0.6, mcLatch: 'none' }), mc = B.analyze(p, 3).mc, r = B.renderRaw(p, 3), x = B.renderStems(p, 3)[0].L;
+  const e = (a, b) => { let s = 0; for (let i = Math.round((a - r.tStart) * FS); i < Math.round((b - r.tStart) * FS); i++) s += x[i] * x[i]; return s / ((b - a) * FS); };
+  assert.ok(e(mc.tEnd + 0.13, mc.tEnd + 0.33) > 10 * e(mc.t0 + 0.1, mc.tEnd - 0.1), 'the vent is far louder than the stroke');
+  assert.ok(e(mc.t0 + 0.1, mc.tEnd - 0.1) > 100 * e(0, mc.t0 - 0.03), 'quiet before the valve opens');
 });

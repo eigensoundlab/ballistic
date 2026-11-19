@@ -17,10 +17,10 @@ function fPress(v) { return v >= 1000 ? (v / 1000).toFixed(v >= 1e5 ? 0 : 1) + '
 function fCount(v) { return String(Math.round(v)); }
 
 var KINDS = [['projectile', 'Projectile'], ['explosion', 'Explosion'], ['implosion', 'Implosion'], ['destruction', 'Destruction'], ['rocket', 'Jet, rocket'], ['rotor', 'Rotor'],
-  ['discharge', 'Discharge'], ['blaster', 'Blaster'], ['field', 'Forcefield'], ['liquid', 'Liquid'], ['recording', 'Recording']];
+  ['discharge', 'Discharge'], ['blaster', 'Blaster'], ['field', 'Forcefield'], ['liquid', 'Liquid'], ['mechanism', 'Mechanism'], ['recording', 'Recording']];
 /* two families of sources; Recording places any sound, so it sits in both */
 var SECTIONS = [['action', 'Weapons and energy', ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording']],
-  ['game', 'Game sounds', ['liquid', 'recording']]];
+  ['game', 'Game sounds', ['liquid', 'mechanism', 'recording']]];
 function inSection(sec, k) { return SECTIONS.filter(function (x) { return x[0] === sec; })[0][2].indexOf(k) >= 0; }
 function sectionFor(k) { return inSection(st.section, k) ? st.section : SECTIONS.filter(function (x) { return x[2].indexOf(k) >= 0; })[0][0]; }
 var MATS = [['glass', 'Glass'], ['wood', 'Wood'], ['concrete', 'Concrete'], ['steel', 'Steel']];
@@ -36,7 +36,8 @@ var TRIMS = {
   blaster: [['Launcher', 'line, rails, coils, air'], ['Bolt', 'channel, sizzle, shock'], ['Impact', 'ablation, ring, splash'], ['Aftermath', 'sizzle, steam, ticks']],
   field: [['Hum', 'modes, ripple, solitons'], ['Emissions', 'corona, chorus'], ['Impact ring', ''], ['Crackle', 'sparks, whistlers']],
   recording: [['Recording', 'direct, with its ground bounce'], ['Body', 'the recording through it'], null, null],
-  liquid: [['Bubbles', 'ringing, collapsing'], ['Impact', 'slap, stream, swell, roar'], ['Surface', 'bursts, droplets'], ['Air', 'vessel, steam, crust']]
+  liquid: [['Bubbles', 'ringing, collapsing'], ['Impact', 'slap, stream, swell, roar'], ['Surface', 'bursts, droplets'], ['Air', 'vessel, steam, crust']],
+  mechanism: [['Drive', 'motor, gears, pump, air'], ['Path', 'rails, ring gear, creak'], ['Body', 'panel modes, rattle'], ['Ends', 'latch, stop, seal, bolt']]
 };
 var MIX_NOTE = {
   projectile: '0 dB keeps the physical balance between layers.',
@@ -49,9 +50,10 @@ var MIX_NOTE = {
   blaster: 'The bolt follows the model. Launcher, impact and aftermath levels are set against it, not measured.',
   field: 'A forcefield has no physical scale. Every level here is relative to the hum.',
   recording: 'A recording has no known level. The body is set to the loudness of the recording; distance, air and ground bounce follow the geometry.',
-  liquid: 'Bubbles, impacts, bursts and droplets follow their size and speed. Stream noise, collapses, steam, roar, crust and the vessel resonance are set against them, not measured.'
+  liquid: 'Bubbles, impacts, bursts and droplets follow their size and speed. Stream noise, collapses, steam, roar, crust and the vessel resonance are set against them, not measured.',
+  mechanism: 'Stops, latches and bolts are struck with the energy the panel carries, a hundredth of it reaching its modes. Drive, path and rattle levels are set against them, not measured.'
 };
-var LQ = ['liquid'], P = ['projectile'], X = ['explosion'], I = ['implosion'], D = ['destruction'], K = ['rocket'], T = ['rotor'], PK = ['projectile', 'rocket'], PKT = ['projectile', 'rocket', 'rotor'], G = ['discharge'], W = ['blaster'], F = ['field'], PKTW = ['projectile', 'rocket', 'rotor', 'blaster'], RC = ['recording'], PKW = ['projectile', 'rocket', 'blaster'];
+var MC = ['mechanism'], LQ = ['liquid'], P = ['projectile'], X = ['explosion'], I = ['implosion'], D = ['destruction'], K = ['rocket'], T = ['rotor'], PK = ['projectile', 'rocket'], PKT = ['projectile', 'rocket', 'rotor'], G = ['discharge'], W = ['blaster'], F = ['field'], PKTW = ['projectile', 'rocket', 'rotor', 'blaster'], RC = ['recording'], PKW = ['projectile', 'rocket', 'blaster'];
 function fLen(v) { return v >= 1000 ? (v / 1000).toFixed(2) + ' km' : v >= 1 ? v.toFixed(1) + ' m' : v >= 0.01 ? (v * 100).toFixed(1) + ' cm' : (v * 1000).toFixed(1) + ' mm'; }
 function fForce(v) { return v >= 1e6 ? (v / 1e6).toFixed(2) + ' MN' : v >= 1000 ? (v / 1000).toFixed(1) + ' kN' : v.toFixed(0) + ' N'; }
 function fSpeed(v) { return v.toFixed(0) + ' m/s'; }
@@ -168,6 +170,18 @@ var SPEC = [
   { bank: 'source', kinds: LQ, when: lqIs('stream', 'bubble'), id: 'lqRate', label: 'Bubbles', hint: 'per second', min: 0.5, max: 5000, scale: 'log', fmt: function (v) { return v.toFixed(v < 10 ? 1 : 0) + ' /s'; } },
   { bank: 'source', kinds: LQ, when: lqIs('stream', 'bubble'), id: 'lqSize', label: 'Bubble size', hint: 'against the usual', min: 0.25, max: 4, scale: 'log', fmt: function (v) { return v.toFixed(2) + '\u00d7'; } },
   { bank: 'source', kinds: LQ, when: function (p) { return p.lqMode === 'bubble' && (p.lqMedium === 'water' || p.lqMedium === 'oil'); }, id: 'lqHeat', label: 'Heat', hint: 'sings, then boils', min: 0, max: 1, fmt: fPct },
+  { bank: 'source', kinds: MC, id: 'mcType', label: 'Mechanism', options: [['slide', 'Sliding door, gate'], ['hinge', 'Hinged door, lid'], ['rotate', 'Turret, servo'], ['switch', 'Switch, lever']] },
+  { bank: 'source', kinds: MC, when: mcIs('slide', 'hinge', 'rotate'), id: 'mcDrive', label: 'Drive', options: [['electric', 'Electric motor'], ['hydraulic', 'Hydraulic'], ['pneumatic', 'Pneumatic'], ['manual', 'By hand']] },
+  { bank: 'source', kinds: MC, when: mcIs('slide', 'hinge'), id: 'mcAction', label: 'Moves', options: [['open', 'Opens'], ['close', 'Closes']] },
+  { bank: 'source', kinds: MC, id: 'mcMass', label: 'Moving mass', min: 0.005, max: 3000, scale: 'log', fmt: fMass },
+  { bank: 'source', kinds: MC, id: 'mcMat', label: 'Made of', options: [['steel', 'Steel'], ['aluminium', 'Aluminium'], ['wood', 'Wood'], ['plastic', 'Plastic']] },
+  { bank: 'source', kinds: MC, when: mcIs('slide'), id: 'mcStroke', label: 'Travel', min: 0.05, max: 6, scale: 'log', fmt: fLen },
+  { bank: 'source', kinds: MC, when: mcIs('hinge', 'rotate'), id: 'mcAngle', label: 'Angle', min: 5, max: 360, scale: 'log', fmt: function (v) { return v.toFixed(0) + '\u00b0'; } },
+  { bank: 'source', kinds: MC, id: 'mcTime', label: 'Travel time', min: 0.005, max: 12, scale: 'log', fmt: fTime },
+  { bank: 'source', kinds: MC, when: function (p) { return p.mcType !== 'switch' && p.mcDrive === 'electric'; }, id: 'mcRpm', label: 'Motor speed', hint: 'at full travel speed', min: 300, max: 20000, scale: 'log', fmt: function (v) { return v.toFixed(0) + ' rev/min'; } },
+  { bank: 'source', kinds: MC, when: mcIs('slide', 'hinge', 'rotate'), id: 'mcStop', label: 'End stop', options: [['hard', 'Hard'], ['rubber', 'Rubber seal'], ['damped', 'Damper']] },
+  { bank: 'source', kinds: MC, when: mcIs('slide', 'hinge'), id: 'mcLatch', label: 'Latch', options: [['none', 'None'], ['latch', 'Spring latch'], ['bolt', 'Motor bolt']] },
+  { bank: 'source', kinds: MC, id: 'mcWear', label: 'Wear', hint: 'creaks, knocks, rattle', min: 0, max: 1, fmt: fPct },
   { bank: 'source', kinds: RC, id: 'rcAsset', label: 'Recording', sound: true },
   { bank: 'source', kinds: RC, id: 'rcAssetTools', custom: soundTools('rcAsset') },
   { bank: 'source', kinds: RC, id: 'rcMode', label: 'Movement', options: [['place', 'Placed in the scene'], ['flyby', 'Flies past']] },
@@ -214,6 +228,7 @@ var SPEC = [
   { bank: 'scene', kinds: G, id: 'dcDist', label: 'Distance', min: 0.3, max: 5000, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: F, id: 'ffDist', label: 'Distance', min: 0.5, max: 200, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: LQ, id: 'lqDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
+  { bank: 'scene', kinds: MC, id: 'mcDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: X, id: 'exDist', label: 'Distance', min: 3, max: 3000, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: I, id: 'imDist', label: 'Distance', min: 1, max: 2000, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: D, id: 'dsDist', label: 'Distance', min: 1, max: 200, scale: 'log', fmt: fDist },
@@ -256,6 +271,7 @@ var SPEC = [
 SPEC.forEach(function (s) { if (!s.obj) s.obj = 'p'; });
 var SOUND_KEYS = SPEC.filter(function (s) { return s.sound && s.obj === 'p'; }).map(function (s) { return s.id; });
 function isPlasma(p) { return p.ffType === 'plasma'; }
+function mcIs() { var m = Array.prototype.slice.call(arguments); return function (p) { return m.indexOf(p.mcType) >= 0; }; }
 function lqIs() { var m = Array.prototype.slice.call(arguments); return function (p) { return m.indexOf(p.lqMode) >= 0; }; }
 function isLine(p) { return p.lnType === 'line'; }
 function isBarrel(p) { return p.lnType === 'rail' || p.lnType === 'coil' || p.lnType === 'gas'; }
@@ -382,6 +398,7 @@ function capText() {
     discharge: 'The channel and the listener. Lit parts have been heard.', blaster: st.p.bvType !== 'none' ? 'Path view. The lateral axis is stretched to fit.' : 'Frequency against arrival time: each curve is one path of a dispersive wave.', recording: st.p.rcMode === 'flyby' ? 'Path view, from above. The lateral axis is stretched to fit.' : st.p.rcBody !== 'none' && st.p.rcBody !== 'ir' ? 'Frequency against arrival time: each curve is one path through the body.' : 'The recording, as loaded.',
     liquid: { drop: 'Cross-section: the drop, the bubble it traps, droplets thrown back.', splash: 'Cross-section: the object, its air cavity, the droplets.',
       pour: 'The vessel filling; the air column above the liquid sets the pitch.', quench: 'Temperature of the steel against time, and how it boils.' }[st.p.lqMode] || 'Bubble pitches heard, ringing and bursting.',
+    mechanism: 'Speed of the moving edge against time, and what sounds when.',
     field: st.p.ffType === 'plasma' ? 'Slow, shear and fast waves, plus the half-frequency ripple.' : 'Modes of the field, level against frequency.' }[k];
 }
 function syncControls() {
@@ -502,6 +519,7 @@ function srcDelay() {
   if (an.kind === 'destruction') return Math.max(1, st.p.dsDist) / C;
   if (an.kind === 'field') return an.ff.r / C;
   if (an.kind === 'liquid') return an.lq.r / C;
+  if (an.kind === 'mechanism') return an.mc.r / C;
   return 0;
 }
 function restTime() {
@@ -520,6 +538,7 @@ function restTime() {
   }
   if (an.kind === 'field') return 0;
   if (an.kind === 'liquid') return an.lq.loop ? 0 : an.lq.tMain + srcDelay();
+  if (an.kind === 'mechanism') return an.mc.tEnd + srcDelay();
   if (an.kind === 'recording') return an.rc.fly ? an.rc.dur / 2 + an.rc.missD / C : 0;
   if (!an.tr) return 0;
   if (an.kind === 'rocket' && !an.crack) return an.flight * 0.6;
@@ -955,6 +974,42 @@ function sceneLiquid(g, W, H, tw) {
   caption(g, W, lq.mode === 'drop' ? (bub ? 'traps a bubble, ' + fHz(bub.f) : lq.shallow ? 'too shallow to trap a bubble' : 'no bubble this take, chance ' + fPct(lq.chance)) :
     lq.shallow ? 'hits the bottom' : 'cavity closes at ' + fTime(lq.tp), lq.drops && lq.drops.length ? lq.drops.length + ' droplets' : '');
 }
+function fJ(v) { return v < 1 ? (v * 1000).toFixed(v < 0.01 ? 1 : 0) + ' mJ' : fEnergy(v); }
+var STOP_NAMES = { hard: 'hard stop', rubber: 'rubber seal', damped: 'damper' };
+function mechReadouts(mc, p, peak) {
+  var deg = mc.type === 'hinge' || mc.type === 'rotate', drive = mc.type === 'switch' ? 'snaps over centre' : mc.drive === 'electric' ? 'gears ' + fHz(mc.tone) + ', slots ' + fHz(12 * mc.fMotor) :
+    mc.drive === 'hydraulic' ? 'pump ' + fHz(mc.tone) + ', relief at the end' : mc.drive === 'pneumatic' ? 'hiss, vents after the stop' : 'by hand';
+  return [['Travel', (mc.type === 'slide' ? fLen(mc.S) : mc.type === 'switch' ? fLen(mc.S) : p.mcAngle.toFixed(0) + '°') + ' in ' + fTime(mc.T)],
+    ['Top speed', fSpd(mc.vmax) + (deg ? ', ' + (mc.vmax / (mc.type === 'rotate' ? mc.Rr : mc.L) * 180 / Math.PI).toFixed(0) + '°/s' : '')],
+    ['Drive', drive], ['Peak power', fPower(mc.Pk)],
+    ['Into the stop', mc.type === 'switch' ? 'two clicks' : fJ(mc.Eend) + ', ' + STOP_NAMES[p.mcStop] + (mc.creak ? '; creaks ' + fHz(mc.creak) : '')], ['Peak at the ear', peak]];
+}
+function sceneMech(g, W, H, tw) {
+  var mc = an.mc, mL = 16, mR = 16, mT = 24, mB = 22, pw = W - mL - mR, ph = H - mT - mB, tmax = mc.type === 'switch' ? mc.tEnd + 0.05 : mc.dur, i, ts = tw - srcDelay();
+  function X(t) { return mL + t / tmax * pw; } function Y(v) { return mT + (1 - v / mc.vmax * 0.85) * ph; }
+  g.font = '10px ' + col.mono; g.lineWidth = 1;
+  rangeTicks(g, X, tmax, W, H, mL, mR, 's');
+  g.fillStyle = col.line; g.globalAlpha = 0.5; g.beginPath(); g.moveTo(X(mc.t0), Y(0));
+  for (i = 0; i < mc.n; i++) g.lineTo(X(mc.t0 + i / (mc.n - 1) * mc.T), Y(mc.vel[i]));
+  g.lineTo(X(mc.tEnd), Y(0)); g.closePath(); g.fill(); g.globalAlpha = 1;
+  g.strokeStyle = col.tracer; g.lineWidth = 2; g.beginPath();
+  for (i = 0; i < mc.n; i++) { var x = X(mc.t0 + i / (mc.n - 1) * mc.T), y = Y(mc.vel[i]); if (i) g.lineTo(x, y); else g.moveTo(x, y); }
+  g.stroke(); g.lineWidth = 1;
+  /* what sounds when */
+  var marks = [[mc.t0, mc.type === 'switch' ? 'detent' : mc.drive === 'manual' ? 'moves' : 'drive on']];
+  if (mc.type !== 'switch') marks.push([mc.tEnd, mc.close ? 'stop' : 'end stop']); else marks.push([mc.tEnd, 'snap']);
+  if (mc.close && mc.latch === 'latch') marks.push([mc.tEnd + 0.015, 'latch']);
+  if (mc.latch === 'bolt') marks.push([mc.close ? mc.tEnd + 0.49 : mc.t0 - 0.26, 'bolt']);
+  if (mc.drive === 'pneumatic') marks.push([mc.tEnd + 0.12, 'vent']);
+  if (mc.drive === 'hydraulic') marks.push([mc.t0 - 0.3, 'pump']);
+  marks.forEach(function (m, k) {
+    var x = Math.round(X(m[0])) + 0.5;
+    g.strokeStyle = col.shock; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(x, mT + 12 * (k % 2)); g.lineTo(x, H - mB); g.stroke(); g.setLineDash([]);
+    g.fillStyle = col.shock; g.textAlign = x > W - 60 ? 'right' : 'left'; g.fillText(m[1], x + (x > W - 60 ? -3 : 3), mT + 8 + 12 * (k % 2));
+  });
+  if (playing && ts >= 0 && ts <= tmax) { g.fillStyle = col.ink; g.fillRect(X(ts), mT, 1.5, ph); }
+  caption(g, W, 'top speed ' + fSpd(mc.vmax), mc.type === 'switch' ? '' : 'into the stop ' + fJ(mc.Eend));
+}
 function sceneBlaster(g, W, H, tw) { (an.wp.bo.type !== 'none' ? sceneWeapon : sceneSweeps)(g, W, H, tw); }
 function sceneField(g, W, H, tw) {
   var ff = an.ff, mL = 16, mR = 16, mT = 26, mB = 22, pw = W - mL - mR, ph = H - mT - mB, mx = 0;
@@ -976,7 +1031,7 @@ function drawScene(tw) {
   var f = fit($('scene')), g = f.g;
   g.fillStyle = col.well; g.fillRect(0, 0, f.W, f.H); g.textBaseline = 'alphabetic';
   (an.kind === 'explosion' ? sceneExplosion : an.kind === 'implosion' ? sceneImplosion : an.kind === 'destruction' ? sceneDestruction :
-    an.kind === 'rotor' ? sceneRotor : an.kind === 'discharge' ? sceneDischarge : an.kind === 'blaster' ? sceneBlaster : an.kind === 'field' ? sceneField : an.kind === 'liquid' ? sceneLiquid : an.kind === 'recording' ? sceneRecording :
+    an.kind === 'rotor' ? sceneRotor : an.kind === 'discharge' ? sceneDischarge : an.kind === 'blaster' ? sceneBlaster : an.kind === 'field' ? sceneField : an.kind === 'liquid' ? sceneLiquid : an.kind === 'mechanism' ? sceneMech : an.kind === 'recording' ? sceneRecording :
     !an.tr ? sceneSpectrum : sceneProjectile)(g, f.W, f.H, tw);
 }
 function columns(v, W) {
@@ -1098,6 +1153,8 @@ function readouts() {
       ['Corona pulse', fHz(2 * ff.f0)], ['Length', ff.mode === 'hum' ? 'loop' : fTime(ff.dur)], ['Level', 'relative only']];
   } else if (an.kind === 'liquid') {
     items = liquidReadouts(an.lq, p, peak);
+  } else if (an.kind === 'mechanism') {
+    items = mechReadouts(an.mc, p, peak);
   } else if (an.kind === 'recording') {
     var rc = an.rc, bodyName = BODY_NAMES[rc.body];
     items = [['Recording', rc.src ? rc.name + ', ' + fTime(rc.len) + (rc.len >= B.REC_MAX_S - 0.01 ? ', the first 15 s' : '') : 'none loaded'],

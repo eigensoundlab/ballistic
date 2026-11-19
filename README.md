@@ -31,6 +31,7 @@ The second family of sources, for the rest of a game's world. Recording sits in 
 | Source | What is modelled |
 |---|---|
 | Liquid | Bubbles ringing at their Minnaert pitch and climbing as they near the surface, drops trapping them in Oguz and Prosperetti's entrainment window, splashes whose air cavity pinches off into the plunk, a vessel's air column rising as it fills, hot steel quenched through film, transition and nucleate boiling, rain by Marshall and Palmer's drop sizes, streams by Deane and Stokes' bubble sizes, boiling that sings before it rolls, and viscous mud and lava whose domes ring before they burst; in water, oil, mud, lava or acid |
+| Mechanism | Doors, gates, lids, turrets, servos and switches as a drive, a path, a panel and two ends: an electric motor whose slot and gear-mesh tones follow the speed profile, a hydraulic pump that works harder under load and squeals at the relief valve, a pneumatic cylinder that hisses and vents after the stop, rails and ring gears, a dry hinge that creaks by stick-slip at a rate set by the pin's speed, plate modes shaken by the drive, a loose cover that rattles, and latches, seals, dampers and lock bolts struck with the energy the panel carries |
 
 Any event can repeat on a timeline (bursts, salvos, swarms), and every Fire is a fresh take from a new seed.
 
@@ -170,7 +171,8 @@ A recording has no known level: its body is set to its loudness, and only distan
 Real plasma waves are far above hearing, so the forcefield slows them down and shows the factor.
 A liquid's bubbles, impacts, bursts and droplets take their levels from size and speed; the stream noise, collapses,
 steam, crust and vessel resonance are set against them. A kettle's collapses are set so it sings louder than it boils,
-as measured kettles do.
+as measured kettles do. A mechanism's stops, latches and bolts are struck with the energy the panel carries, a hundredth of it reaching
+its modes; drive, path and rattle levels are set against them.
 
 ## Working on it
 
