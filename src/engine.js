@@ -2874,6 +2874,81 @@ function handLayers(pl, p, o, rnd, layers, ev, lab) {
   ev.push({ k: 'impact', t: tA + pl.tMain, label: lab ? pl.label : '' });
 }
 
+/* ---------- fire ----------
+   A flame D metres across puffs at about 1.5 / sqrt(D) Hz (Cetegen and Ahmed's pool-fire law): a torch flutters, a
+   blaze heaves. Its roar is turbulent combustion noise, broadband, peaking lower for bigger flames, carrying a tiny
+   share of the heat release (FIRE_ETA of Q; wood gives about 600 kW per square metre of fire). Wood crackles as
+   pockets of gas and steam burst, with energies in a power law (crackling noise); wet wood hisses and pops more.
+   Embers settle and tick. A cloud of fuel that ignites is a monopole: burnt gas swelling sevenfold within the burn
+   time gives the whump, and the fire then roars and dies back. */
+var FIRE_ETA = 2e-9, FIRES = {
+  campfire: { q: 6e5, crack: 1, hiss: 1, embers: 1, flutter: 0.15, jet: 0 }, torch: { q: 6e5, crack: 0.4, hiss: 0.3, embers: 0, flutter: 0.6, jet: 0 },
+  blaze: { q: 1e6, crack: 0.6, hiss: 0.6, embers: 1.5, flutter: 0.25, jet: 0 }, burner: { q: 2e6, crack: 0, hiss: 0, embers: 0, flutter: 0.05, jet: 1 },
+  ignite: { q: 1e6, crack: 0.5, hiss: 0.3, embers: 0.5, flutter: 0.2, jet: 0 }
+};
+function planFire(q, grnd) {
+  var f = FIRES[q.fiMode] || FIRES.campfire, D = clamp(q.fiSize, 0.02, 30), Q = f.q * Math.PI * D * D / 4, fp = 1.5 / Math.sqrt(D);
+  var loop = q.fiMode !== 'ignite', k = Math.max(1, Math.round(fp * LOOP_S));
+  return { mode: q.fiMode, f: f, D: D, Q: Q, burst: null, fp: loop ? k / LOOP_S : fp, kp: k, fc: clamp(250 / Math.sqrt(D), 60, 2500), prms: Math.sqrt(RHO * C * FIRE_ETA * Q / (4 * Math.PI)),
+    wet: clamp(q.fiMoist, 0, 1), wind: clamp(q.fiWind, 0, 1), r: Math.max(0.3, q.fiDist), loop: loop, dur: loop ? LOOP_S : 2.6, tb: D / (2 * 4), ph: grnd(), tMain: 0.05 };
+}
+/* crackle, ember and hiss events for a stretch of fire; periodic stretches wrap */
+function fireEvents(pl, rnd, len, t0, env) {
+  var evs = [], f = pl.f, rate = 25 * Math.sqrt(pl.Q / 1.7e5) * (0.4 + pl.wet) * f.crack, n = Math.round(rate * len), i;
+  for (i = 0; i < n; i++) {
+    var t = t0 + rnd() * len, u = rnd(), pan = (rnd() * 2 - 1) * 0.5, E = Math.pow(1 - u * (1 - Math.pow(1000, -0.5)), -2), a = 0.5 * Math.sqrt(E / 1000) * env(t), fs = rnd();
+    evs.push(evClick(1, t, 0.0001 + 0.0004 * fs, a, pan));
+    if (E > 100) evs.push(evTone(1, t, 900 + 2500 * fs, 0.004, 0.5 * a, 0, pan));
+  }
+  var ne = Math.round(3 * f.embers * len * Math.sqrt(pl.D));
+  for (i = 0; i < ne; i++) { var te = t0 + rnd() * len, ue = rnd(), pe = (rnd() * 2 - 1) * 0.4; evs.push(ue < 0.7 ? evTone(3, te, 3000 + 4000 * rnd(), 0.003, 0.02 * env(te), 0, pe) : evNoise(3, te, 0.03, 80, 900, 0.05 * Math.sqrt(pl.D) * env(te), pe)); }
+  return evs;
+}
+function fireBeds(pl, rnd, ns, periodic, env, bufs) {
+  var f = pl.f, roar = jetNoise(ns, pl.fc, rnd, periodic), hiss = jetNoise(ns, f.jet ? 3500 : 6000, rnd, periodic), i;
+  var w1 = rnd(), w2 = rnd(), kf = Math.max(1, Math.round((5 + 6 * pl.wind) * LOOP_S)), loopN = periodic ? ns : LOOP_S * FS;
+  for (i = 0; i < ns; i++) {
+    var t = i / FS, x = i / loopN;
+    /* puffing at fp, and the wind fluttering the flame faster; both close round the loop */
+    var m = 1 + 0.45 * Math.sin(TAU * (pl.kp * x + pl.ph)) + (f.flutter + 0.5 * pl.wind) * 0.5 * (Math.sin(TAU * (kf * x + w1)) + 0.6 * Math.sin(TAU * (Math.round(kf * 1.7) * x + w2)));
+    var e = env(t), b = pl.burst ? pl.burst(t) : 1;
+    bufs.m[0][i] += pl.prms * roar[i] * Math.max(0.1, m) * e * b;
+    bufs.m[2][i] += pl.prms * hiss[i] * (f.jet ? 0.8 : 0.35 * pl.wet * f.hiss) * e;
+  }
+}
+function fireSignal(pl, p, o, rnd, ns) {
+  var bf = lqBuffers(ns), gs = [o.g1, o.g2, o.g3, o.g4], mid = new Float32Array(ns), side = new Float32Array(ns), k, i, one = function () { return 1; };
+  liquidSynth(fireEvents(pl, rnd, LOOP_S, 0, one), bf.m, bf.s, rnd, true);
+  fireBeds(pl, rnd, ns, true, one, bf);
+  for (k = 0; k < 4; k++) for (i = 0; i < ns; i++) { mid[i] += bf.m[k][i] * gs[k]; side[i] += bf.s[k][i] * gs[k]; }
+  return { mid: mid, side: side };
+}
+function fireLayers(pl, p, o, rnd, layers, ev, lab) {
+  var ns = Math.ceil(pl.dur * FS), r = pl.r, tA = o.t0 + r / C, bf = lqBuffers(ns), gs = [o.g1, o.g2, o.g3, o.g4], k, i, tb = Math.max(pl.tb, 0.03), t0 = 0.05;
+  /* the fire after ignition: up within the burn time, then dying back */
+  var env = function (t) { return t < t0 ? 0 : t < t0 + tb ? smoothstep((t - t0) / tb) : Math.exp(-(t - t0 - tb) / 0.8); };
+  /* burning the cloud releases about 3.5 MJ per cubic metre within 2 tb; the roar follows that rate, so it bursts */
+  var Vc = Math.PI / 6 * pl.D * pl.D * pl.D, Qb = 3.5e6 * Vc / (2 * tb), kb = Math.sqrt(Qb / pl.Q) - 1;
+  pl.burst = function (t) { var u = (t - t0) / (2 * tb); return u > 0 && u < 1 ? 1 + kb * Math.sin(Math.PI * u) * Math.sin(Math.PI * u) / Math.max(env(t), 0.05) : 1; };
+  liquidSynth(fireEvents(pl, rnd, pl.dur - 0.3, t0, env), bf.m, bf.s, rnd, false);
+  fireBeds(pl, rnd, ns, false, env, bf);
+  /* the whump: the burnt gas swells to (sigma - 1) = 6 times the cloud over T = 2 tb; with the burnt share
+     s(u) = u - sin(2 pi u) / 2 pi the swelling starts and ends smoothly, V'' = 6 V 2 pi sin(2 pi u) / T^2, p = rho V'' / 4 pi */
+  var V = 6 * Math.PI / 6 * pl.D * pl.D * pl.D, T = 2 * tb, n0 = Math.round(t0 * FS), nb = Math.round(T * FS), wh = new Float32Array(ns);
+  for (i = 0; i < nb && n0 + i < ns; i++) wh[n0 + i] = RHO / (4 * Math.PI) * V * TAU * Math.sin(TAU * i / nb) / (T * T);
+  /* most of a large cloud's swell is below hearing; keep what is above 25 Hz */
+  onePoleHP(wh, 25); onePoleHP(wh, 25);
+  for (i = 0; i < ns; i++) bf.m[3][i] += wh[i];
+  for (k = 0; k < 4; k++) {
+    if (!(gs[k] > 0)) continue;
+    var L = new Float32Array(ns), R = new Float32Array(ns), pn = o.pan * 0.7;
+    for (i = 0; i < ns; i++) { L[i] = (bf.m[k][i] * (1 + pn) + bf.s[k][i]) / r; R[i] = (bf.m[k][i] * (1 - pn) - bf.s[k][i]) / r; }
+    postLayer(L, r, o.ground); postLayer(R, r, o.ground);
+    layers.push({ L: L, R: R, t: tA, g: gs[k] });
+  }
+  ev.push({ k: 'launch', t: tA + t0, label: lab ? 'ignites' : '' });
+}
+
 /* ---------- recordings and impulse responses ----------
    Recordings and impulse responses come in from outside as assets: 48 kHz stereo Float32Arrays, set with setAsset()
    (the page decodes the files; the worker gets a copy). Three synthetic examples stand in until a file is loaded. */
@@ -3215,7 +3290,7 @@ var STRENGTH = {
   explosion: { keys: [['exW', 1]] }, implosion: { keys: [['imR0', 1 / 3]] }, destruction: { keys: [['dsMass', 1]] },
   discharge: { keys: [['dcEnergy', 1]] }, blaster: { keys: [['tgEnergy', 1], ['lnEnergy', 1], ['bvChannel', 1], ['bpEnergy', 1]] },
   field: { keys: [['ffHitE', 1]], gain: true }, liquid: { keys: [['lqHeight', 1]] },
-  mechanism: { keys: [], gain: true }, heat: { keys: [], gain: true }, footsteps: { keys: [], gain: true }, voice: { keys: [], gain: true }, handling: { keys: [], gain: true }
+  mechanism: { keys: [], gain: true }, heat: { keys: [], gain: true }, footsteps: { keys: [], gain: true }, voice: { keys: [], gain: true }, handling: { keys: [], gain: true }, fire: { keys: [['fiSize', 0.5]] }
 };
 var MAX_TRIGGERS = 32;
 
@@ -3463,7 +3538,7 @@ function roomIR(p) {
 /* ---------- seamless loops: hover, static burn, field hum ---------- */
 function isLoop(p) {
   return (p.kind === 'rocket' && p.rkMode === 'static') || (p.kind === 'rotor' && p.rtMode === 'hover') || (p.kind === 'field' && p.ffMode === 'hum') ||
-    (p.kind === 'liquid' && (p.lqMode === 'stream' || p.lqMode === 'rain' || p.lqMode === 'bubble'));
+    (p.kind === 'liquid' && (p.lqMode === 'stream' || p.lqMode === 'rain' || p.lqMode === 'bubble')) || (p.kind === 'fire' && p.fiMode !== 'ignite');
 }
 /* The four layer groups (the Layer levels sliders). For a stem, every other group that is on gets a vanishing gain
    instead of zero: the code then takes exactly the same branches and random draws as the full mix, so the stems add
@@ -3481,6 +3556,7 @@ function renderLoop(p, seed, only, ext) {
   if (pl.kind === 'rotor') { sig = rotorSignal(pl.rt, p, o, rnd, Np, true); r = pl.rt.r; }
   else if (pl.kind === 'field') { sig = fieldSignal(pl.ff, p, o, rnd, Np, true); r = pl.ff.r; }
   else if (pl.kind === 'liquid') { sig = liquidSignal(pl.lq, p, o, rnd, Np); r = pl.lq.r; }
+  else if (pl.kind === 'fire') { sig = fireSignal(pl.fi, p, o, rnd, Np); r = pl.fi.r; }
   else { sig = rocketStatic(pl, p, o, rnd, Np); r = pl.r; }
   var L = new Float32Array(Np), R = new Float32Array(Np);
   for (i = 0; i < Np; i++) { L[i] = (sig.mid[i] + sig.side[i]) / r; R[i] = (sig.mid[i] - sig.side[i]) / r; }
@@ -3515,7 +3591,7 @@ function planRep(p, seed, k, s) {
     if (kind === 'explosion') q.exDist = p.exDist * a; else if (kind === 'destruction') q.dsDist = p.dsDist * a;
     else if (kind === 'implosion') q.imDist = p.imDist * a; else if (kind === 'discharge') q.dcDist = p.dcDist * a;
     else if (kind === 'blaster') { q.miss = p.miss * a; q.bpStiff = p.bpStiff * (1 + j * 0.3 * (grnd() - 0.5)); q.bvSpeed = p.bvSpeed * (1 + j * 0.1 * (grnd() - 0.5)); }
-    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'heat') q.thDist = p.thDist * a; else if (kind === 'footsteps') q.ftDist = p.ftDist * a; else if (kind === 'voice') q.crDist = p.crDist * a; else if (kind === 'handling') q.hdDist = p.hdDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
+    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'heat') q.thDist = p.thDist * a; else if (kind === 'footsteps') q.ftDist = p.ftDist * a; else if (kind === 'voice') q.crDist = p.crDist * a; else if (kind === 'handling') q.hdDist = p.hdDist * a; else if (kind === 'fire') q.fiDist = p.fiDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
     if (kind !== 'projectile') pan = j * 1.4 * (grnd() - 0.5);
   }
   if (kind === 'explosion') out = { ex: planExplosion(q.exW, q.exDist, Math.round(q.exFrags), Math.round(q.exDebris), grnd) };
@@ -3532,6 +3608,7 @@ function planRep(p, seed, k, s) {
   else if (kind === 'footsteps') out = { ft: planFeet(q, grnd) };
   else if (kind === 'voice') out = { cr: planVoice(q, grnd) };
   else if (kind === 'handling') out = { hd: planHand(q, grnd) };
+  else if (kind === 'fire') out = { fi: planFire(q, grnd) };
   else if (kind === 'recording') out = { rc: planRecording(q) };
   else {
     out = analyzeProj(q); out.pay = null;
@@ -3591,6 +3668,7 @@ function mixScene(p, seed, only) {
     else if (pl.kind === 'footsteps') feetLayers(pl.ft, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'voice') voiceLayers(pl.cr, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'handling') handLayers(pl.hd, q, o, rnd, layers, ev, lab);
+    else if (pl.kind === 'fire') fireLayers(pl.fi, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'recording') recordingLayers(pl.rc, q, o, rnd, layers, ev, lab);
     else projLayers(pl, q, o, rnd, layers, ev, lab);
     if (!trig) tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
@@ -4172,6 +4250,7 @@ var DEFAULTS = { kind: 'projectile',
   ftMass: 75, ftLegs: '2', ftFoot: 'boot', ftSurface: 'concrete', ftGait: 'walk', ftSteps: 6, ftGear: 0, ftDist: 2,
   crType: 'beast', crCall: 'attack', crMass: 190, crPitch: 1, crTract: 1, crEffort: 1, crRough: 1, crLength: 1, crDist: 5,
   hdObject: 'coins', hdAction: 'drop', hdHeight: 0.3, hdSurface: 'wood', hdDist: 0.8,
+  fiMode: 'campfire', fiSize: 0.6, fiMoist: 0.3, fiWind: 0.2, fiDist: 2,
   seqCount: 1, seqInterval: 0.12, seqJitter: 0.2, seqFrom: 'interval', seqAsset: 'ex:door', seqSens: 0.5, seqDyn: 0.7, seqGuide: -40,
   dsKnock: 'ex:knock', dsLike: 'glass', dsDebris: 'model', grAsset: 'ex:gravel',
   env: 'field', ground: 0.5, trimCrack: 0, trimLaunch: 0, trimWake: 0, trimImpact: 0 };
@@ -4356,7 +4435,15 @@ var PRESETS = [
   { id: 'armourdrop', name: 'Armour dropped', p: { kind: 'handling', hdObject: 'armour', hdHeight: 0.6, hdSurface: 'stone', hdDist: 1.5, env: 'indoor' } },
   { id: 'intobag', name: 'Into the bag', p: { kind: 'handling', hdObject: 'leather', hdAction: 'equip', env: 'room' } },
   { id: 'scroll', name: 'Unrolling a scroll', p: { kind: 'handling', hdObject: 'paper', hdAction: 'use', env: 'room' } },
-  { id: 'clothes', name: 'Clothes dropped', p: { kind: 'handling', hdObject: 'cloth', hdHeight: 1, env: 'room' } }
+  { id: 'clothes', name: 'Clothes dropped', p: { kind: 'handling', hdObject: 'cloth', hdHeight: 1, env: 'room' } },
+
+  { id: 'campfire', name: 'Campfire, loop', p: { kind: 'fire', env: 'forest' } },
+  { id: 'wetfire', name: 'Wet wood fire, loop', p: { kind: 'fire', fiMoist: 1, env: 'forest' } },
+  { id: 'walltorch', name: 'Wall torch, loop', p: { kind: 'fire', fiMode: 'torch', fiSize: 0.08, fiWind: 0.3, fiDist: 1, env: 'cave' } },
+  { id: 'blaze', name: 'Burning building, loop', p: { kind: 'fire', fiMode: 'blaze', fiSize: 8, fiDist: 15, env: 'urban' } },
+  { id: 'furnace', name: 'Gas furnace, loop', p: { kind: 'fire', fiMode: 'burner', fiSize: 0.15, fiWind: 0, fiDist: 1.5, env: 'indoor' } },
+  { id: 'ignite', name: 'Brazier ignites', p: { kind: 'fire', fiMode: 'ignite', fiSize: 0.5, fiDist: 3, env: 'indoor' } },
+  { id: 'fireball', name: 'Fuel cloud ignites', p: { kind: 'fire', fiMode: 'ignite', fiSize: 3, fiDist: 15, env: 'field' } }
 ];
 var ACTION_DEFAULTS = { slowmo: 1, punch: 0, weight: 0, drive: 0, bite: 0, tail: 0, swell: 0, width: 0, loud: 0 };
 var ACTION_PRESETS = [
@@ -4381,6 +4468,6 @@ function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for 
 root.BFX = { qrCode: qrCode, qrSvg: qrSvg, packPlan: packPlan, unpackPlan: unpackPlan, setAsset: setAsset, getAsset: getAsset, removeAsset: removeAsset, xmpText: xmpText, ixmlText: ixmlText, keywordPaths: keywordPaths, getIR: getIR, detectHits: detectHits, getHits: getHits, measureModes: measureModes, getModes: getModes,
   getGrains: getGrains, features: features, distance: distance, matchScore: matchScore, posToVal: posToVal, monoOf: monoOf, BAND_HZ: BAND_HZ, MAX_TRIGGERS: MAX_TRIGGERS, FIT_TRIES: FIT_TRIES, triggered: triggered, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
   EXAMPLES: EXAMPLES, REC_MAX_S: REC_MAX_S, IR_MAX_S: IR_MAX_S, renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
-  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, MECH_MATS: MECH_MATS, GROUNDS: GROUNDS, FEET: FEET, CALLS: CALLS, HANDS: HANDS, _crumple: crumple, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
+  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, MECH_MATS: MECH_MATS, GROUNDS: GROUNDS, FEET: FEET, CALLS: CALLS, HANDS: HANDS, _crumple: crumple, FIRES: FIRES, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
   ACTION_DEFAULTS: ACTION_DEFAULTS, ACTION_PRESETS: ACTION_PRESETS, merge: merge, _wake: wakeLayer, _modal: modalHit, rng: rng };
 })(typeof self !== 'undefined' ? self : globalThis);

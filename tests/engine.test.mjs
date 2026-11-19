@@ -32,7 +32,7 @@ test('presets use only known parameters and every source type has presets', () =
     kinds.add(pr.p.kind || 'projectile');
   }
   assert.equal(new Set(B.PRESETS.map(pr => pr.id)).size, B.PRESETS.length, 'preset ids are unique');
-  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism', 'heat', 'footsteps', 'voice', 'handling']) assert.ok(kinds.has(k), k);
+  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism', 'heat', 'footsteps', 'voice', 'handling', 'fire']) assert.ok(kinds.has(k), k);
 });
 
 test('every preset renders finite, audible, normalised audio', () => {
@@ -595,3 +595,30 @@ test('paper crumples in clicks whose energies follow a power law', () => {
   for (let d = 1; d < 3; d++) assert.ok(Math.abs(Math.log10(dec[d - 1] / dec[d]) - 0.3) < 0.08, `decades ${dec}`);
 });
 function require_crumple() { return B._crumple; }
+
+const fire = o => B.merge(B.DEFAULTS, Object.assign({ kind: 'fire', env: 'none', ground: 0 }, o));
+
+test('a flame puffs at about 1.5 / sqrt(D), held to whole cycles in a loop, and roars with its heat release', () => {
+  for (const D of [0.08, 0.6, 8]) {
+    const fi = B.analyze(fire({ fiSize: D }), 3).fi;
+    assert.ok(Math.abs(fi.fp / (1.5 / Math.sqrt(D)) - 1) < 0.5 / (1.5 / Math.sqrt(D) * B.LOOP_S) + 1e-9, `D ${D}: ${fi.fp}`);
+    assert.equal(Math.round(fi.fp * B.LOOP_S * 1e6) / 1e6 % 1, 0);
+  }
+  const small = B.analyze(fire({ fiSize: 0.5 }), 3).fi, big = B.analyze(fire({ fiSize: 5 }), 3).fi;
+  assert.ok(Math.abs(big.prms / small.prms - 10) < 1e-9, 'ten times the size, a hundred times the heat, ten times the pressure');
+  /* the roar follows the puffing: louder at the crest of each puff than at its trough */
+  const p = fire({ fiSize: 8, fiWind: 0, fiMoist: 0 }), fi = B.analyze(p, 3).fi, x = B.renderStems(p, 3)[0].L, n = x.length, k = fi.kp;
+  let crest = 0, trough = 0;
+  for (let c = 0; c < k; c++) for (const [ph, acc] of [[0.25, 1], [0.75, -1]]) {
+    const mid = Math.round(((c + ph - fi.ph + 10) % k) / k * n), a = Math.max(0, mid - 2400), e = x.slice(a, a + 4800).reduce((s, v) => s + v * v, 0);
+    if (acc > 0) crest += e; else trough += e;
+  }
+  assert.ok(crest > 3 * trough, `crest ${crest} trough ${trough}`);
+});
+
+test('a fuel cloud igniting bursts into a roar within its burn time, then dies back to the fire', () => {
+  const p = fire({ fiMode: 'ignite', fiSize: 2 }), fi = B.analyze(p, 3).fi, r = B.renderRaw(p, 3), x = B.renderStems(p, 3)[0].L;
+  const e = (a, b) => { let s = 0; for (let i = Math.round((a - r.tStart) * FS); i < Math.round((b - r.tStart) * FS); i++) s += x[i] * x[i]; return s / ((b - a) * FS); };
+  const burn = e(0.05 + 0.5 * fi.tb, 0.05 + 1.5 * fi.tb), after = e(1.4, 1.8);
+  assert.ok(burn > 10 * after, `burn ${burn} after ${after}`);
+});
