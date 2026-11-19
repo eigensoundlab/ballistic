@@ -172,6 +172,8 @@ canvas { display: block; width: 100%; background: var(--well); }
 .seg button { font: 600 13px/1 var(--font-body); color: var(--ink); background: transparent; border: 0; padding: 0 12px; cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--ink); color: var(--panel); }
 .seg.kinds { flex: 1 1 auto; flex-wrap: wrap; }
+.seg.sections { align-self: flex-start; max-width: 100%; }
+.seg.sections button { padding: 8px 12px; font-size: 12.5px; }
 .seg.kinds button { flex: 1 1 104px; min-width: 0; padding: 11px 4px; font: 700 14px/1 var(--font-display); letter-spacing: 0.05em; text-transform: uppercase;
   box-shadow: -1px 0 0 var(--line), 0 -1px 0 var(--line); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #again { flex: none; }
@@ -204,6 +206,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
   </header>
 
   <section class="stage" aria-label="Source and output">
+    <div class="seg sections" id="sections" role="group" aria-label="Sound family"></div>
     <div class="seg kinds" id="kinds" role="group" aria-label="Source type"></div>
     <div class="chips scroll" id="srcChips" role="group" aria-label="Source preset"></div>
     <div id="scopes">

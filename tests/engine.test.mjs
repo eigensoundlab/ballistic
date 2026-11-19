@@ -32,7 +32,7 @@ test('presets use only known parameters and every source type has presets', () =
     kinds.add(pr.p.kind || 'projectile');
   }
   assert.equal(new Set(B.PRESETS.map(pr => pr.id)).size, B.PRESETS.length, 'preset ids are unique');
-  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording']) assert.ok(kinds.has(k), k);
+  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid']) assert.ok(kinds.has(k), k);
 });
 
 test('every preset renders finite, audible, normalised audio', () => {
@@ -363,4 +363,90 @@ test('a take with its place carries it in iXML and XMP', () => {
   const x = B.xmpText(m);
   assert.match(x, /exif:GPSLatitude="50,5\.1120N"/); assert.match(x, /exif:GPSLongitude="14,25\.6740W"/); assert.match(x, /exif:GPSAltitude="2354\/10"/);
   assert.ok(!/LOCATION|GPS/.test(B.ixmlText({ title: 't' }) + B.xmpText({ title: 't' })), 'no place unless it was asked for');
+});
+
+/* power of one frequency over a stretch of samples (Goertzel) */
+function power(x, a, b, f) {
+  let s1 = 0, s2 = 0; const k = 2 * Math.cos(2 * Math.PI * f / FS);
+  for (let i = a; i < b; i++) { const s = x[i] + k * s1 - s2; s2 = s1; s1 = s; }
+  return s1 * s1 + s2 * s2 - k * s1 * s2;
+}
+function peakHz(x, a, b, lo, hi) {
+  let best = 0, bf = 0;
+  for (let j = 0; j < 160; j++) { const f = lo * Math.pow(hi / lo, j / 159), p = power(x, a, b, f); if (p > best) { best = p; bf = f; } }
+  return bf;
+}
+const liquid = o => B.merge(B.DEFAULTS, Object.assign({ kind: 'liquid', env: 'none', ground: 0 }, o));
+function rmsDb(r) { let e = 0; for (const v of r.L) e += v * v; return 20 * Math.log10(Math.sqrt(e / r.L.length) * r.peakPa / 2e-5); }
+
+test('a drop traps a bubble that rings at its Minnaert pitch and climbs as it nears the surface', () => {
+  const p = liquid({ lqMode: 'drop' }), lq = B.analyze(p, 3).lq, x = B.renderStems(p, 3)[0].L;
+  assert.ok(lq.bub, 'this drop lands in the entrainment window');
+  const want = Math.sqrt(3 * 1.4 * (101325 + 998 * 9.81 * lq.rd + 2 * 0.072 / lq.bub.a) / 998) / (2 * Math.PI * lq.bub.a);
+  assert.ok(Math.abs(lq.bub.f / want - 1) < 1e-9);
+  const i0 = x.findIndex(v => Math.abs(v) > 0.05), early = zcr(x, i0, i0 + 96), late = zcr(x, i0 + 300, i0 + 396);
+  assert.ok(Math.abs(early / lq.bub.f - 1) < 0.1, `starts at ${early}`);
+  assert.ok(late > early * 1.1, `climbs to ${late}`);
+});
+
+test('a stone plunks: its air cavity closes after about 2.1 sqrt(R/g) and rings low', () => {
+  const p = liquid({ lqMode: 'splash', lqMass: 0.25, lqHeight: 1.5, lqDepth: 1 }), lq = B.analyze(p, 3).lq, x = B.renderStems(p, 3)[0].L;
+  assert.ok(Math.abs(lq.tp / (2.1 * Math.sqrt(lq.R / 9.81)) - 1) < 1e-3);
+  assert.ok(lq.cav.f > 60 && lq.cav.f < 400, `plunk ${lq.cav.f}`);
+  assert.ok(Math.abs(peakHz(x, 0, x.length, 30, 2000) / lq.cav.f - 1) < 0.08);
+  const shallow = B.analyze(liquid({ lqMode: 'splash', lqMass: 0.25, lqHeight: 1.5, lqDepth: 0.02 }), 3).lq;
+  assert.ok(shallow.shallow && !shallow.cav, 'a puddle has no cavity to close');
+});
+
+test('a vessel filling raises the pitch of the air column above the liquid', () => {
+  /* the column is driven by the bubbles and the stream; its response, out over in, peaks at its pitch */
+  const p = liquid({ lqMode: 'pour' }), lq = B.analyze(p, 3).lq, r = B.renderRaw(p, 3), st = B.renderStems(p, 3), out = st[3].L;
+  const inp = st[0].L.map((v, i) => v + st[1].L[i]);
+  assert.ok(lq.fRes1 > 3 * lq.fRes0, `${lq.fRes0} to ${lq.fRes1}`);
+  const at = t => B.C / (4 * (lq.H * (1 - (lq.f0 + (lq.f1 - lq.f0) * clamp01((t - 0.03) / lq.P))) + 0.6 * lq.rv));
+  for (const t of [0.4, lq.P / 2, lq.P - 0.25]) {
+    const a = Math.round((t - r.tStart - 0.05) * FS), b = a + Math.round(0.1 * FS);
+    let best = 0, bf = 0;
+    for (let j = 0; j < 160; j++) { const f = 300 * Math.pow(20, j / 159), g = power(out, a, b, f) / (power(inp, a, b, f) + 1e-30); if (g > best) { best = g; bf = f; } }
+    assert.ok(Math.abs(bf / at(t) - 1) < 0.08, `at ${t.toFixed(2)} s: ${bf} against ${at(t)}`);
+  }
+});
+function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+
+test('light rain on water rings near 15 kHz; heavy rain, with its large drops, rings lower', () => {
+  const peak = R => { const x = B.renderStems(liquid({ lqMode: 'rain', lqRain: R }), 3)[0].L; return peakHz(x, 0, x.length, 1000, 20000); };
+  const light = peak(1), heavy = peak(40);
+  assert.ok(light > 12000 && light < 18000, `light ${light}`);
+  assert.ok(heavy < 6000, `heavy ${heavy}`);
+});
+
+test('a kettle sings loudest just before it boils, then quietens', () => {
+  const lvl = h => rmsDb(B.renderRaw(liquid({ lqMode: 'bubble', lqRate: 120, lqHeat: h }), 3));
+  const cold = lvl(0.1), sing = lvl(0.65), edge = lvl(0.9), boil = lvl(1);
+  assert.ok(sing > cold + 6 && sing > edge + 3 && sing > boil + 2, `${cold} ${sing} ${edge} ${boil}`);
+});
+
+test('hot steel boils in a vapour film until the Leidenfrost point, then crackles and falls quiet', () => {
+  const p = liquid({ lqMode: 'quench', lqMass: 0.1, lqThick: 0.0015, lqTemp: 600 }), lq = B.analyze(p, 3).lq, x = B.renderStems(p, 3)[0].L;
+  const k = Math.round(lq.tL * 1000);
+  assert.ok(lq.tL > 0.5 && lq.temp[k - 1] >= B.QUENCH.tl && lq.temp[k] < B.QUENCH.tl);
+  assert.ok(lq.flux[k + 200] > lq.flux[k - 200], 'the flux climbs once the film breaks');
+  const e = (a, b) => { let s = 0; for (let i = Math.round(a * FS); i < Math.round(b * FS); i++) s += x[i] * x[i]; return s / ((b - a) * FS); };
+  const film = e(0.2, lq.tL - 0.2);
+  let crackle = 0;
+  for (let t = lq.tL; t < lq.tEnd - 0.25; t += 0.1) crackle = Math.max(crackle, e(t, t + 0.25));
+  assert.ok(crackle > 2 * film, `crackle ${crackle} against film ${film}`);
+  const n = x.length / FS;
+  assert.ok(n < lq.tEnd + 0.6 && e(n - 0.15, n) < film / 100, 'fades to silence at the end');
+  assert.ok(B.analyze(liquid({ lqMode: 'quench', lqTemp: 300 }), 3).lq.tL < 0, 'no film under the Leidenfrost point');
+});
+
+test('viscous liquids swell into a dome that rings on the gas before it bursts', () => {
+  for (const med of ['mud', 'lava']) {
+    /* a film a tenth of the radius thick on the gas spring; bubble sizes spread by e^(0.7 x 1.5) either way */
+    const L = B.LIQUIDS[med], f = Math.sqrt(3 * 1.4 * 101325 / (0.1 * L.rho)) / (2 * Math.PI * L.gas), lo = f / Math.exp(1.05), hi = f * Math.exp(1.05);
+    const st = B.renderStems(liquid({ lqMode: 'bubble', lqMedium: med, lqRate: med === 'lava' ? 3 : 8 }), 3), dome = peakHz(st[1].L, 0, st[1].L.length, 20, 2000);
+    assert.ok(dome > lo && dome < hi, `${med} dome ${dome}`);
+    assert.ok(peakHz(st[2].L, 0, st[2].L.length, 100, 16000) > 2 * dome, `${med} burst above the dome`);
+  }
 });

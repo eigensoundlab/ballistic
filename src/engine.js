@@ -341,6 +341,8 @@ var ENVS = {
             taps: [{ ms: 480, g: 0.35, pan: 0.5 }, { ms: 900, g: 0.25, pan: -0.6 }, { ms: 1500, g: 0.15, pan: 0.2 }] },
   indoor: { name: 'Indoor range', delays: [9, 14, 17, 22, 30, 38, 48, 56], rt60: 1.1, damp: 6000, wet: -5 },
   water:  { name: 'Deep water', delays: [131, 197, 263, 347, 431, 523, 617, 733], rt60: 3.8, damp: 900, wet: -9 },
+  room:   { name: 'Small room', delays: [5, 7, 11, 13, 17, 19, 23, 29], rt60: 0.45, damp: 7000, wet: -12 },
+  cave:   { name: 'Cave', delays: [19, 27, 37, 47, 61, 73, 89, 103], rt60: 2.6, damp: 3500, wet: -6 },
   ir:     { name: 'Recorded room', ir: true }
 };
 
@@ -1747,6 +1749,447 @@ function fieldLayers(pl, p, o, rnd, layers, ev, lab) {
 }
 function disruptName(pl) { return pl.plasma ? 'disruption' : 'collapse'; }
 
+/* ---------- liquids ----------
+   A bubble rings at the Minnaert frequency, f = sqrt(3 gamma P / rho) / (2 pi a), damped by radiation and heat
+   (van den Doel's fit for water, 2005) and by viscosity (2 mu / rho a^2), and climbs in pitch as it nears the surface.
+   In air we hear the surface it pushes: a source at a free surface, p = 2 rho_air a^3 eps w^2 k / r, where eps is its
+   relative swing and k how much of the swing reaches the surface. A bubble that bursts at the surface rings the open
+   cavity it leaves as a Helmholtz resonator, about 43 Hz m / a; in a viscous liquid the film over it swells into a
+   dome first and rings on the gas inside (Vergniolle and Brandeis, 1996). Collapsing vapour bubbles use the
+   Rayleigh-Plesset collapse of the implosion model. Every sound is an event, so one-shots and loops share the code. */
+var GRAV = 9.81, GAMMA = 1.4, LQ_CAP = 3000;
+var LIQUIDS = {
+  water: { rho: 998, mu: 1e-3, sigma: 0.072, gas: 0.0025 },
+  oil: { rho: 910, mu: 0.06, sigma: 0.032, gas: 0.003 },
+  mud: { rho: 1600, mu: 8, sigma: 0.07, gas: 0.02 },
+  lava: { rho: 2600, mu: 300, sigma: 0.4, gas: 0.08 },
+  acid: { rho: 1200, mu: 2e-3, sigma: 0.07, gas: 0.00025 }
+};
+function minnaert(a, lq, depth) { return Math.sqrt(3 * GAMMA * (P0 + lq.rho * GRAV * depth + 2 * lq.sigma / a) / lq.rho) / (TAU * a); }
+function bubbleDecay(f, a, lq) { return 0.043 * f + 0.0014 * Math.pow(f, 1.5) + 2 * lq.mu / (lq.rho * a * a); }
+function viscFrac(lq) { return lq.mu / (lq.mu + 1); }
+/* fall speed with quadratic drag toward the terminal speed ut */
+function fallSpeed(h, ut) { return ut * Math.sqrt(1 - Math.exp(-2 * GRAV * Math.max(h, 0) / (ut * ut))); }
+/* Gunn and Kinzer's terminal speed of a raindrop, from its radius */
+function dropTerminal(rd) { return Math.max(0.3, 9.65 - 10.3 * Math.exp(-1200 * rd)); }
+/* Oguz and Prosperetti's regular entrainment: 41.3 Fr^0.179 < We < 48.3 Fr^0.247, with We = Bo Fr for a given drop.
+   Large drops near terminal speed trap bubbles irregularly. Viscous liquids seldom ring. */
+function entrainChance(rd, U, lq) {
+  var d = 2 * rd, Bo = lq.rho * GRAV * d * d / lq.sigma, Fr = U * U / (GRAV * d), lo = Math.pow(41.3 / Bo, 1 / 0.821), hi = Math.pow(48.3 / Bo, 1 / 0.753);
+  var reg = hi > lo ? clamp(Math.min((Fr - 0.85 * lo) / (0.3 * lo), (1.15 * hi - Fr) / (0.3 * hi)), 0, 1) : 0;
+  var irr = clamp((d * 1000 - 2.2) / 2.5, 0, 0.7) * clamp((U - 1.5) / 3, 0, 1);
+  return Math.max(reg, irr) * (lq.mu > 0.02 ? 0.1 : 1);
+}
+/* events: 0 ringing bubble, 1 one-cycle click, 2 damped tone, 3 dome, 4 vapour collapse, 5 noise burst; g is the layer group */
+function evRing(g, t, a, depth, eps, k, xi, pan, lq) {
+  var f = minnaert(a, lq, depth), w = TAU * f;
+  return { k: 0, g: g, t: t, pan: pan, f: f, d: bubbleDecay(f, a, lq), xi: xi, amp: 2 * RHO * a * a * a * eps * w * w * k, a: a };
+}
+function evClick(g, t, w, amp, pan) { return { k: 1, g: g, t: t, pan: pan, w: Math.max(w, 3 / FS), amp: amp }; }
+function evTone(g, t, f, tau, amp, ph, pan) { return { k: 2, g: g, t: t, pan: pan, f: f, tau: tau, amp: amp, ph: ph }; }
+/* burst: the gas held at the surface tension and dome weight leaves through the opening hole and rings the cavity */
+function evBurst(g, t, a, lq, gain, pan) {
+  var vf = viscFrac(lq), fH = Math.min(42.9 / a, 16000), q = 1.5 + 4 * vf, dp = 4 * lq.sigma / a + 0.5 * lq.rho * GRAV * a * vf;
+  var dV = 2 / 3 * Math.PI * a * a * a * dp / (GAMMA * P0), w = TAU * fH;
+  return evTone(g, t, fH, q / (Math.PI * fH), RHO * dV * w * w / (4 * Math.PI) * gain, 0.25, pan);
+}
+/* dome: the viscous film over a bubble, a tenth of its radius thick, rings on the gas spring before it bursts */
+function domeHz(a, lq) { return Math.sqrt(3 * GAMMA * P0 / (0.1 * lq.rho)) / (TAU * a); }
+function evDome(g, t, a, lq, gain, pan) {
+  var vf = viscFrac(lq), f = domeHz(a, lq), Td = clamp(Math.sqrt(a / GRAV) * (1 + 2 * vf), 2 / f, 0.4);
+  var w = TAU * f, V = 2 / 3 * Math.PI * a * a * a;
+  return { k: 3, g: g, t: t, pan: pan, f: f, Td: Td, amp: RHO * 0.1 * vf * V * w * w / TAU * gain };
+}
+function evCollapse(g, t, a, amp, pan) { return { k: 4, g: g, t: t, pan: pan, st: clamp(0.005 / a, 0.5, 8), amp: amp }; }
+function evNoise(g, t, dur, hp, lp, amp, pan) { return { k: 5, g: g, t: t, pan: pan, dur: dur, hp: hp, lp: lp, amp: amp }; }
+
+function lqPut(mid, side, k, x, pan, wrap) {
+  var N = mid.length;
+  if (wrap) k = ((k % N) + N) % N; else if (k >= N) return false;
+  if (k >= 0) { mid[k] += x; side[k] += x * pan; }
+  return true;
+}
+function liquidSynth(evs, mids, sides, rnd, wrap) {
+  var bp = bubblePulse(), e, m, s, n0, n, i, x, ph, e1, dec, d, amp, fi, t, u, sn, cs, j, fr;
+  for (var q = 0; q < evs.length; q++) {
+    e = evs[q]; m = mids[e.g]; s = sides[e.g]; n0 = Math.round(e.t * FS);
+    if (e.k === 0) {
+      if (e.f > 20000) continue;
+      d = e.d; amp = e.amp;
+      if (d > 2 * e.f) { amp = amp * 2 * e.f / d; d = 2 * e.f; }
+      n = Math.min(Math.ceil(6.9 / d * FS), 3 * FS); ph = 0; e1 = amp; dec = Math.exp(-d / FS);
+      for (i = 0; i < n; i++) {
+        t = i / FS;
+        fi = Math.min(e.f * (1 + e.xi * d * t), 20000);
+        ph += fi / FS;
+        if (!lqPut(m, s, n0 + i, e1 * fsin(ph) * Math.min(1, i / 4), e.pan, wrap)) break;
+        e1 *= dec;
+      }
+    } else if (e.k === 1) {
+      n = Math.max(3, Math.round(e.w * FS));
+      for (i = 0; i < n; i++) if (!lqPut(m, s, n0 + i, e.amp * fsin(i / n), e.pan, wrap)) break;
+    } else if (e.k === 2) {
+      if (e.f > 20000) continue;
+      n = Math.min(Math.ceil(6.9 * e.tau * FS), FS); e1 = e.amp; dec = Math.exp(-1 / (e.tau * FS));
+      for (i = 0; i < n; i++) {
+        if (!lqPut(m, s, n0 + i, e1 * fsin(e.f * i / FS + e.ph) * Math.min(1, i / 2), e.pan, wrap)) break;
+        e1 *= dec;
+      }
+    } else if (e.k === 3) {
+      /* rises over Td to the burst at e.t, then falls silent within one period */
+      n = Math.round((e.Td + 1 / e.f) * FS); n0 = Math.round((e.t - e.Td) * FS);
+      for (i = 0; i < n; i++) {
+        t = i / FS;
+        u = t < e.Td ? Math.sin(Math.PI / 2 * t / e.Td) : Math.cos(Math.PI / 2 * (t - e.Td) * e.f);
+        x = e.amp * u * u * fsin(e.f * t);
+        if (!lqPut(m, s, n0 + i, x, e.pan, wrap)) break;
+      }
+    } else if (e.k === 4) {
+      n = Math.floor((bp.length - 1) / e.st);
+      for (i = 0; i < n; i++) {
+        u = i * e.st; j = Math.floor(u); fr = u - j;
+        if (!lqPut(m, s, n0 + i, e.amp * (bp[j] + (bp[j + 1] - bp[j]) * fr), e.pan, wrap)) break;
+      }
+    } else {
+      n = Math.ceil(e.dur * 5 * FS); var b = new Float32Array(n);
+      for (i = 0; i < n; i++) b[i] = rnd() * 2 - 1;
+      if (e.lp) { onePoleLP(b, e.lp); onePoleLP(b, e.lp); }
+      if (e.hp) onePoleHP(b, e.hp);
+      sn = peakOf(b) || 1; cs = e.amp / sn;
+      for (i = 0; i < n; i++) {
+        t = i / FS;
+        if (!lqPut(m, s, n0 + i, cs * b[i] * Math.exp(-t / e.dur) * Math.min(1, t / 0.0005), e.pan, wrap)) break;
+      }
+    }
+  }
+}
+/* noise for a bed, unit rms, band-passed round fpk; periodic beds wrap so the loop closes */
+function bedAdd(mid, side, x, env, amp, pan) { for (var i = 0; i < mid.length; i++) { var v = x[i] * env[i] * amp; mid[i] += v; side[i] += v * pan; } }
+
+/* a drop of radius rd falling h onto a liquid depth deep: the impact, maybe a bubble, maybe a droplet thrown back */
+function planDrop(pl, q, grnd) {
+  var lq = pl.lq, rd = q.lqDrop, U = fallSpeed(q.lqHeight, dropTerminal(rd)), shallow = q.lqDepth < 4 * rd, u, v, w;
+  pl.U = U; pl.rd = rd; pl.shallow = shallow; pl.chance = shallow ? 0 : entrainChance(rd, U, lq);
+  pl.evs.push(evClick(1, 0, rd / U, RHO * Math.PI * rd * U * U / TAU * (shallow ? 2 : 1), 0));
+  u = grnd(); v = grnd(); w = grnd();
+  pl.bub = null;
+  if (u < pl.chance) {
+    pl.bub = evRing(0, 4 * rd / U + 0.002, rd * (0.3 + 0.35 * v), rd, 0.06, 0.8, 0.12, 0, lq);
+    pl.evs.push(pl.bub);
+  }
+  pl.dur = 0.25;
+  if (!shallow && U > 1.2 && w < 0.5) {
+    /* the jet that rises after the impact pinches off a droplet; it falls back and may ring again */
+    var r2 = 0.35 * rd, v2 = 0.4 * U, t2 = 0.01 + 2 * v2 / GRAV, c2 = entrainChance(r2, v2, lq), u2 = grnd(), v3 = grnd();
+    pl.evs.push(evClick(2, t2, r2 / v2, RHO * Math.PI * r2 * v2 * v2 / TAU, 0.1));
+    if (u2 < c2) pl.evs.push(evRing(2, t2 + 4 * r2 / v2 + 0.002, r2 * (0.3 + 0.35 * v3), r2, 0.06, 0.8, 0.12, 0.1, lq));
+    pl.dur = t2 + 0.15;
+  }
+  if (shallow) pl.evs.push(evNoise(2, 0.0005, 0.004 + 0.002 * U, 2500, 12000, RHO * Math.PI * rd * U * U / TAU * 0.5, 0));
+  pl.tMain = pl.bub ? pl.bub.t : 0; pl.label = pl.bub ? 'bubble' : 'drop';
+}
+/* droplets thrown up by a splash, each landing as a small drop */
+function splashDroplets(pl, n, rdLo, rdHi, vLo, vHi, t0, grnd, gain) {
+  var lq = pl.lq, i, a, b, c, d, e, rd, v, th, tl, pan, ch, last = t0;
+  for (i = 0; i < n; i++) {
+    a = grnd(); b = grnd(); c = grnd(); d = grnd(); e = grnd();
+    rd = rdLo + (rdHi - rdLo) * a; v = vLo + (vHi - vLo) * b; th = 0.5 + 0.8 * c;
+    tl = t0 + 0.004 + 2 * v * Math.sin(th) / GRAV;
+    pan = (d * 2 - 1) * clamp(v * Math.cos(th) * (tl - t0) / (pl.r + 0.5), 0, 0.9);
+    pl.evs.push(evClick(2, tl, rd / v, RHO * Math.PI * rd * v * v / TAU * gain, pan));
+    ch = entrainChance(rd, v, lq);
+    if (e < ch) {
+      var f = grnd();
+      pl.evs.push(evRing(2, tl + 4 * rd / v + 0.002, rd * (0.3 + 0.35 * f), rd, 0.05, 0.8, 0.1, pan, lq));
+    }
+    if (tl > last) last = tl;
+    pl.drops.push({ t: tl, rd: rd, pan: pan });
+  }
+  return last;
+}
+/* an object of mass m, a stone at 2500 kg/m^3, entering at speed U: a slap, the air cavity it drags down pinches
+   off as one large bubble (the plunk), the jet that shoots up falls back, the crown throws droplets */
+function planSplash(pl, q, grnd) {
+  var lq = pl.lq, m = q.lqMass, R = Math.cbrt(3 * m / (4 * Math.PI * 2500)), ut = Math.sqrt(2 * m * GRAV / (RHO * 0.47 * Math.PI * R * R));
+  var U = fallSpeed(q.lqHeight, ut), vf = viscFrac(lq), depth = q.lqDepth, shallow = depth < 1.2 * R, tau = Math.max(0.5 * R / U, 3e-4);
+  var slap = RHO * Math.PI * R * R * U / tau / TAU * (lq.rho / 1000), last = 0;
+  pl.U = U; pl.R = R; pl.shallow = shallow; pl.drops = []; pl.cav = null;
+  pl.evs.push(evClick(1, 0, 2 * tau, slap, 0));
+  pl.evs.push(evNoise(1, 0.001, 0.02 + 0.04 * R, 1200, 9000, 0.3 * slap * (1 - 0.7 * vf), 0));
+  if (shallow) {
+    /* the object hits the bottom: a dull knock, and the liquid sprays out sideways */
+    pl.tBottom = depth / U;
+    pl.evs.push(evClick(1, pl.tBottom, 0.004 + 0.01 * R, 0.6 * slap, 0));
+    pl.evs.push(evNoise(2, pl.tBottom, 0.06, 1500, 10000, 0.25 * slap * (1 - 0.7 * vf), 0));
+    pl.tMain = 0; pl.label = 'splash';
+  } else {
+    var tp = 2.1 * Math.sqrt(R / GRAV) * (1 + 0.5 * vf), Lc = Math.min(0.5 * U * tp, depth - R), Vb = 0.18 * Math.PI * R * R * Lc;
+    var ac = Math.cbrt(3 * Vb / (4 * Math.PI)), kc = 1 / (1 + (Lc / (4 * ac)) * (Lc / (4 * ac)));
+    pl.cav = evRing(0, tp, ac, Lc, 0.15 * (1 - 0.8 * vf), kc, 0.04, 0, lq);
+    pl.evs.push(pl.cav);
+    pl.evs.push(evClick(1, tp, 0.002, 0.2 * slap, 0));
+    pl.tMain = tp; pl.label = 'pinch-off'; pl.tp = tp; pl.Lc = Lc;
+    /* the Worthington jet rises at about 0.6 U and falls back as a few drops */
+    var vj = 0.6 * U / (1 + 2 * vf), nj = Math.round(3 + 3 * (1 - vf));
+    last = splashDroplets(pl, nj, 0.0015, 0.004, 0.5 * vj, 0.8 * vj, tp + vj / GRAV * 0.6, grnd, 1);
+  }
+  var nc = Math.round(clamp(8 * Math.sqrt(m / 0.1) * U / 3, 2, 60) * (1 - 0.8 * vf));
+  last = Math.max(last, splashDroplets(pl, nc, 0.0008, 0.003, 0.15 * U, 0.6 * U, 0, grnd, 1));
+  pl.dur = Math.max(last, pl.tMain) + 0.6;
+}
+/* a stream poured into a vessel: bubbles and splash noise where it lands, and the air column above the liquid
+   ringing at c / 4(L + 0.6 r), rising as the vessel fills */
+function planPour(pl, q) {
+  var Q = q.lqFlow / 1000, U = fallSpeed(q.lqHeight, 9), H = q.lqVessel, rv = 0.225 * H, Av = Math.PI * rv * rv, f0 = 0.05, f1 = clamp(q.lqFill, 0.1, 0.95);
+  var P = clamp((f1 - f0) * H * Av / Q, 1, 12);
+  f1 = f0 + P * Q / (H * Av);
+  pl.U = U; pl.Q = Q; pl.rj = Math.sqrt(Q / (Math.PI * U)); pl.H = H; pl.rv = rv; pl.P = P; pl.f0 = f0; pl.f1 = Math.min(f1, 0.97);
+  pl.fRes0 = C / (4 * (H * (1 - pl.f0) + 0.6 * rv)); pl.fRes1 = C / (4 * (H * (1 - pl.f1) + 0.6 * rv));
+  pl.rate = 800 * Math.sqrt(Q / 1e-4) * clamp(U / 1.5, 0.3, 3);
+  pl.dur = P + 0.5; pl.tMain = P / 2; pl.label = 'pour';
+}
+function pourResonance(pl, t) {
+  var fill = pl.f0 + (pl.f1 - pl.f0) * clamp(t / pl.P, 0, 1);
+  return C / (4 * (pl.H * (1 - fill) + 0.6 * pl.rv));
+}
+/* bubble radii between lo and hi from Deane and Stokes' size law for entrained air: n(a) ~ a^-3/2 below the Hinze
+   scale (about 1 mm, where turbulence stops breaking bubbles up) and a^-10/3 above it; u in [0, 1) picks one */
+var HINZE = 0.001;
+function powerRadius(u, lo, hi) {
+  var xl = Math.min(lo, HINZE) / HINZE, xh = Math.max(hi, HINZE) / HINZE;
+  var I1 = lo < HINZE ? 2 * (Math.pow(xl, -0.5) - Math.pow(Math.min(hi, HINZE) / HINZE, -0.5)) : 0;
+  var x0 = Math.max(lo, HINZE) / HINZE, I2 = hi > HINZE ? 3 / 7 * (Math.pow(x0, -7 / 3) - Math.pow(xh, -7 / 3)) : 0, w = u * (I1 + I2);
+  if (w < I1) return HINZE * Math.pow(Math.pow(xl, -0.5) - w / 2, -2);
+  return HINZE * Math.pow(Math.pow(x0, -7 / 3) - 7 / 3 * (w - I1), -3 / 7);
+}
+function pourEvents(pl, rnd) {
+  var lq = pl.lq, n = Math.min(Math.round(pl.rate * pl.P), Math.round(LQ_CAP * pl.P)), wgt = Math.sqrt(pl.rate * pl.P / Math.max(1, n)), i, t, u, a, e, pan, hi = Math.max(0.001, 1.5 * pl.rj);
+  for (i = 0; i < n; i++) {
+    t = rnd() * pl.P; u = rnd(); e = rnd(); pan = (rnd() * 2 - 1) * 0.3;
+    a = powerRadius(u, 0.0003, hi);
+    pl.evs.push(evRing(0, 0.03 + t, a, 0.03, (0.02 + 0.03 * e) * wgt, 0.5, 0.08, pan, lq));
+  }
+}
+/* the stream's splash noise, then the column above the liquid excited by everything below it */
+function pourBeds(pl, mids, sides, rnd, ns) {
+  var nz = jetNoise(ns, clamp(1200 * pl.U / 2, 400, 6000), rnd, false), env = new Float32Array(ns), i, amp = 0.03 * Math.sqrt(pl.Q / 1e-4) * (pl.U / 2) * (pl.U / 2);
+  for (i = 0; i < ns; i++) { var t = i / FS - 0.03; env[i] = t < 0 ? 0 : Math.min(1, t / 0.05, Math.max(0, pl.P - t) / 0.08); }
+  bedAdd(mids[1], sides[1], nz, env, amp, 0);
+  /* air column: two-pole resonators at the quarter-wave pitch and its third harmonic, retuned every 32 samples */
+  var x = new Float32Array(ns), z = [0, 0, 0, 0], h = 0;
+  for (i = 0; i < ns; i++) x[i] = mids[0][i] + mids[1][i];
+  for (var b = 0; b < ns; b += 32) {
+    /* input gains set each peak to 3 times the sound under it, about +10 dB, whatever its pitch */
+    var f = pourResonance(pl, b / FS - 0.03), f3 = Math.min(3 * f, 18000), r1 = Math.exp(-Math.PI * f / (15 * FS)), r3 = Math.exp(-Math.PI * f3 / (20 * FS));
+    var c1 = 2 * r1 * Math.cos(TAU * f / FS), c3 = 2 * r3 * Math.cos(TAU * f3 / FS), g1 = 6 * (1 - r1) * Math.sin(TAU * f / FS), g3 = 3 * (1 - r3) * Math.sin(TAU * f3 / FS);
+    for (i = b; i < Math.min(ns, b + 32); i++) {
+      var y1 = c1 * z[0] - r1 * r1 * z[1] + g1 * x[i], y3 = c3 * z[2] - r3 * r3 * z[3] + g3 * x[i];
+      z[1] = z[0]; z[0] = y1; z[3] = z[2]; z[2] = y3;
+      h = y1 + y3; mids[3][i] += h;
+    }
+  }
+}
+/* hot steel into water. Film boiling holds a vapour blanket (a steady hiss and roar) until the surface falls below
+   the Leidenfrost point; then the film breaks, the heat flux jumps toward the critical flux and vapour bubbles
+   collapse in the cold water by the thousand (the crackle), easing off through nucleate boiling to silence. */
+var QUENCH = { tw: 20, tl: 380, tchf: 135, hf: 450, qchf: 2.5e6, c: 490, rho: 7800 };
+function quenchFlux(T) {
+  var Q = QUENCH;
+  if (T <= 100) return 900 * (T - Q.tw);
+  if (T <= Q.tchf) return Q.qchf * Math.pow((T - 100) / (Q.tchf - 100), 3);
+  var qL = Q.hf * (Q.tl - 100) + 5.67e-8 * 0.8 * (Math.pow(Q.tl + 273, 4) - Math.pow(373, 4));
+  if (T < Q.tl) return Math.exp(Math.log(Q.qchf) + (Math.log(qL) - Math.log(Q.qchf)) * (T - Q.tchf) / (Q.tl - Q.tchf));
+  return Q.hf * (T - 100) + 5.67e-8 * 0.8 * (Math.pow(T + 273, 4) - Math.pow(373, 4));
+}
+function planQuench(pl, q) {
+  var m = q.lqMass, V = m / QUENCH.rho, th = Math.max(q.lqThick, 5e-4), A = 2 * V / th + 4 * Math.sqrt(V / th) * th, T = q.lqTemp, n = 0, steps = 12000, i;
+  var temp = new Float32Array(steps), flux = new Float32Array(steps);
+  pl.A = A; pl.T0 = T; pl.tL = -1; pl.tEnd = 12; pl.qMax = 0;
+  var iMax = 0;
+  for (i = 0; i < steps; i++) {
+    var qf = quenchFlux(T);
+    temp[i] = T; flux[i] = T > 100 ? qf * A : 0;
+    if (flux[i] > pl.qMax) { pl.qMax = flux[i]; iMax = i; }
+    if (pl.tL < 0 && i > 0 && T < QUENCH.tl && temp[i - 1] >= QUENCH.tl) pl.tL = i / 1000;
+    T -= qf * A * 0.001 / (m * QUENCH.c);
+    n = i + 1;
+    /* nucleate boiling eases off as the cube of the superheat; past the peak, a hundredth of it is silence */
+    if (T < 101 || (i > iMax && flux[i] < 0.01 * pl.qMax)) { pl.tEnd = i / 1000; break; }
+  }
+  pl.temp = temp.slice(0, n); pl.flux = flux.slice(0, n);
+  pl.dur = Math.min(pl.tEnd + 0.6, 12.5); pl.tMain = Math.max(0, pl.tL); pl.label = pl.tL > 0 ? 'film breaks' : 'quench';
+  pl.evs.push(evClick(1, 0, 0.004, RHO * Math.PI * Math.pow(V, 2 / 3) * 2 / 0.004 / TAU * 0.3, 0));
+  pl.evs.push(evNoise(2, 0.002, 0.03, 1500, 9000, 0.02, 0));
+}
+function quenchEvents(pl, rnd) {
+  var lq = pl.lq, i, k, n = pl.flux.length, latent = 0.6 * 2.26e6;
+  for (i = 0; i < n; i++) {
+    var Qw = pl.flux[i], film = pl.temp[i] >= QUENCH.tl;
+    if (Qw <= 0) continue;
+    /* film boiling sheds bubbles of a few millimetres from the top of the blanket; below the Leidenfrost point
+       bubbles of about a millimetre form and collapse at the wall */
+    var a0 = film ? 0.0025 : 0.0008, rate = Qw / (latent * 4 / 3 * Math.PI * a0 * a0 * a0) * (film ? 0.2 : 1);
+    /* at most one film bubble or three collapses are drawn per millisecond; more stand in for the rest by energy */
+    var mean = rate * 0.001, cap = film ? 1 : 3, u = rnd(), cnt, wgt = 1;
+    if (mean > cap) { cnt = cap; wgt = Math.sqrt(mean / cap); } else cnt = Math.floor(mean) + (u < mean - Math.floor(mean) ? 1 : 0);
+    /* the last of the nucleate boiling would trickle on for seconds; it fades out over 0.4 s instead */
+    wgt *= clamp((pl.tEnd - i / 1000) / 0.4, 0, 1);
+    for (k = 0; k < cnt; k++) {
+      var t = (i + rnd()) / 1000, v = rnd(), pan = (rnd() * 2 - 1) * 0.25, a = a0 * (0.5 + v);
+      if (film) {
+        pl.evs.push(evRing(0, t, a, 0.05, 0.015 * wgt, 0.3, 0.03, pan, lq));
+        if (v < 0.3) pl.evs.push(evBurst(2, t + 0.15, a, lq, 0.5 * wgt, pan));
+      } else pl.evs.push(evCollapse(0, t, a, 0.02 * (a / 0.001) * wgt, pan));
+    }
+  }
+}
+function quenchBeds(pl, mids, sides, rnd, ns) {
+  var roar = jetNoise(ns, 350, rnd, false), hiss = jetNoise(ns, 5000, rnd, false), eR = new Float32Array(ns), eH = new Float32Array(ns), i, sr = 0, sh = 0;
+  var aR = Math.exp(-1 / (0.08 * FS)), aH = Math.exp(-1 / (0.05 * FS));
+  for (i = 0; i < ns; i++) {
+    var j = Math.floor(i / FS * 1000), Qw = j < pl.flux.length ? pl.flux[j] : 0, film = j < pl.temp.length && pl.temp[j] >= QUENCH.tl;
+    sr = (film ? Math.sqrt(Qw) : 0) + (sr - (film ? Math.sqrt(Qw) : 0)) * aR;
+    sh = Math.sqrt(Qw) + (sh - Math.sqrt(Qw)) * aH;
+    eR[i] = sr; eH[i] = sh * clamp((pl.tEnd - i / FS) / 0.4, 0, 1);
+  }
+  bedAdd(mids[1], sides[1], roar, eR, 2e-4, 0);
+  bedAdd(mids[3], sides[3], hiss, eH, 3e-4, 0);
+}
+/* rain on open water: Marshall and Palmer's drop sizes for a rain rate, each drop at its terminal speed. Drops near
+   a millimetre trap bubbles regularly and ring near 15 kHz; the large ones trap bubbles irregularly and ring lower. */
+function planRain(pl, q) {
+  var R = Math.max(0.1, q.lqRain), lam = 4.1 * Math.pow(R, -0.21), area = 2, cdf = [], tot = 0, D, k;
+  for (k = 0; k < 120; k++) {
+    D = 0.3 + 0.05 * k;
+    tot += 8000 * Math.exp(-lam * D) * dropTerminal(D / 2000) * 0.05 * area;
+    cdf.push(tot);
+  }
+  pl.flux = tot; pl.cdf = cdf; pl.lam = lam;
+  pl.dur = LOOP_S; pl.tMain = 0; pl.label = '';
+}
+function rainEvents(pl, rnd) {
+  var lq = pl.lq, n = Math.min(Math.round(pl.flux * LOOP_S), LQ_CAP * LOOP_S), wgt = Math.sqrt(pl.flux * LOOP_S / Math.max(1, n)), i, lo, hi, md;
+  for (i = 0; i < n; i++) {
+    var t = rnd() * LOOP_S, u = rnd() * pl.cdf[pl.cdf.length - 1], pan = (rnd() * 2 - 1) * 0.9, v = rnd(), w = rnd();
+    lo = 0; hi = pl.cdf.length - 1;
+    while (lo < hi) { md = (lo + hi) >> 1; if (pl.cdf[md] < u) lo = md + 1; else hi = md; }
+    var rd = (0.3 + 0.05 * lo + 0.05 * w) / 2000, U = dropTerminal(rd), reg = entrainChance(rd, U, lq);
+    pl.evs.push(evClick(1, t, rd / U, RHO * Math.PI * rd * U * U / TAU * wgt, pan));
+    if (v < reg) {
+      var big = rd > 0.0011, x = rnd();
+      pl.evs.push(evRing(0, t + 4 * rd / U + 0.001, big ? rd * (0.25 + 0.5 * x) : 0.00022 * (0.85 + 0.3 * x), 0.002, big ? 0.08 : 0.05, 0.8, 0.1, pan, lq));
+      pl.evs[pl.evs.length - 1].amp *= wgt;
+    }
+  }
+}
+/* running water: bubbles entrained by the flow, sizes by the power law, with the turbulent rush and droplets */
+function streamEvents(pl, q, rnd) {
+  var lq = pl.lq, rate = q.lqRate, n = Math.min(Math.round(rate * LOOP_S), LQ_CAP * LOOP_S), wgt = Math.sqrt(rate * LOOP_S / Math.max(1, n)), hi = 0.006 * q.lqSize, i;
+  for (i = 0; i < n; i++) {
+    var t = rnd() * LOOP_S, u = rnd(), e = rnd(), k = rnd(), pan = (rnd() * 2 - 1) * 0.8;
+    pl.evs.push(evRing(0, t, powerRadius(u, 0.0005, Math.max(0.001, hi)), 0.05, (0.015 + 0.025 * e) * wgt, 0.2 + 0.7 * k, 0.06, pan, lq));
+  }
+  var nd = Math.round(n * 0.5);
+  for (i = 0; i < nd; i++) {
+    var t2 = rnd() * LOOP_S, a2 = rnd(), pan2 = (rnd() * 2 - 1) * 0.8;
+    pl.evs.push(evClick(2, t2, 0.0001 + 0.0003 * a2, (0.002 + 0.006 * a2) * wgt, pan2));
+  }
+}
+/* gas rising through a liquid and bursting: boiling water or oil, bubbling mud, degassing lava, fizzing acid. Heat is
+   how far a pot on a steady flame has come: at first the bubbles that nucleate at the bottom collapse in the cooler
+   liquid above (the kettle sings, loudest just before the boil), then they survive and burst at the surface. */
+/* collapse level at 1 m for a 1 mm bubble, set so the kettle sings about 6 dB over its rolling boil, as measured kettles do */
+var COLLAPSE_PA = 0.3;
+function bubbleEvents(pl, q, rnd) {
+  var lq = pl.lq, vf = viscFrac(lq), hot = q.lqMedium === 'water' || q.lqMedium === 'oil', heat = hot ? clamp(q.lqHeat, 0, 1) : 1, fc = hot ? lqCollapse(heat) : 0;
+  var rate = q.lqRate * (hot ? heat * heat * (1 - fc) : 1), a0 = lq.gas * q.lqSize * (hot ? 0.6 + 0.8 * heat : 1), depth = 0.05, i, n, wgt;
+  n = Math.min(Math.round(rate * LOOP_S), LQ_CAP * LOOP_S); wgt = Math.sqrt(rate * LOOP_S / Math.max(1, n));
+  for (i = 0; i < n; i++) {
+    var t = rnd() * LOOP_S, u1 = rnd(), u2 = rnd(), u3 = rnd(), pan = (rnd() * 2 - 1) * 0.6;
+    var a = a0 * Math.exp(0.7 * (u1 + u2 + u3 - 1.5));
+    pl.evs.push(evRing(0, t, a, depth, 0.02 * (1 - vf) * wgt, 0.3, 0.05, pan, lq));
+    var vr = Math.min(0.25, 2 / 9 * lq.rho * GRAV * a * a / lq.mu), tb = t + depth / vr;
+    if (vf > 0.05) pl.evs.push(evDome(1, tb, a, lq, wgt, pan));
+    pl.evs.push(evBurst(2, tb, a, lq, wgt, pan));
+  }
+  /* small vapour bubbles at the bottom, ten for every one that later makes it up; they grow as the liquid warms */
+  var rc = hot ? 10 * q.lqRate * (0.2 + 0.8 * heat) * fc : 0, ac = lq.gas * q.lqSize * (0.15 + 0.5 * heat), nc = Math.min(Math.round(rc * LOOP_S), LQ_CAP * LOOP_S), wc = Math.sqrt(rc * LOOP_S / Math.max(1, nc));
+  for (i = 0; i < nc; i++) {
+    var tc = rnd() * LOOP_S, v1 = rnd(), pc = (rnd() * 2 - 1) * 0.6, a2 = ac * (0.6 + 0.8 * v1);
+    pl.evs.push(evCollapse(0, tc, a2, COLLAPSE_PA * (a2 / 0.001) * wc, pc));
+  }
+  if (q.lqMedium === 'lava') {
+    /* the crust cooling on top cracks: sparse glassy ticks */
+    for (i = 0; i < Math.round(5 * LOOP_S); i++) {
+      var tk = rnd() * LOOP_S, fq = rnd(), pk = (rnd() * 2 - 1) * 0.8, ak = rnd();
+      pl.evs.push(evTone(3, tk, 1800 + 4000 * fq, 0.004 + 0.01 * (1 - fq), 0.02 + 0.08 * ak, 0, pk));
+    }
+  }
+  pl.rate = rate; pl.rateC = rc;
+}
+/* share of bubbles the colder liquid above collapses before they reach the surface: all of them until the liquid is
+   half heated, none once it boils through */
+function lqCollapse(heat) { return clamp((0.85 - heat) / 0.35, 0, 1); }
+/* the expected spread of bubble pitches, for the diagram: quantiles of the size law, no random draws */
+function lqHist(pl, q) {
+  var lq = pl.lq, out = [], i, u, a;
+  for (i = 0; i < 200; i++) {
+    u = (i + 0.5) / 200;
+    if (pl.mode === 'stream') a = powerRadius(u, 0.0005, Math.max(0.001, 0.006 * q.lqSize));
+    else if (pl.mode === 'pour') a = powerRadius(u, 0.0003, Math.max(0.001, 1.5 * pl.rj));
+    else if (pl.mode === 'rain') a = 0.00022 * (0.85 + 0.3 * u);
+    else { var hot = q.lqMedium === 'water' || q.lqMedium === 'oil', heat = hot ? clamp(q.lqHeat, 0, 1) : 1; a = lq.gas * q.lqSize * (hot ? 0.6 + 0.8 * heat : 1) * Math.exp(0.7 * 1.73 * (u - 0.5)); }
+    out.push({ f: minnaert(a, lq, pl.mode === 'rain' ? 0.002 : 0.05), fb: Math.min(42.9 / a, 16000), fd: domeHz(a, lq) });
+  }
+  return out;
+}
+function planLiquid(q, grnd) {
+  var mode = q.lqMode, med = mode === 'quench' || mode === 'rain' || mode === 'stream' ? 'water' : q.lqMedium;
+  var pl = { mode: mode, med: med, lq: LIQUIDS[med] || LIQUIDS.water, r: Math.max(0.2, q.lqDist), loop: mode === 'stream' || mode === 'rain' || mode === 'bubble', evs: [], dur: LOOP_S, tMain: 0, label: '' };
+  if (mode === 'drop') planDrop(pl, q, grnd);
+  else if (mode === 'splash') planSplash(pl, q, grnd);
+  else if (mode === 'pour') planPour(pl, q);
+  else if (mode === 'quench') planQuench(pl, q);
+  else if (mode === 'rain') planRain(pl, q);
+  if (mode === 'stream' || mode === 'rain' || mode === 'bubble' || mode === 'pour') pl.hist = lqHist(pl, q);
+  if (mode === 'bubble') { var hot = q.lqMedium === 'water' || q.lqMedium === 'oil'; pl.heat = hot ? clamp(q.lqHeat, 0, 1) : 1; pl.fc = hot ? lqCollapse(pl.heat) : 0; }
+  return pl;
+}
+function lqBuffers(ns) { var m = [], s = [], k; for (k = 0; k < 4; k++) { m.push(new Float32Array(ns)); s.push(new Float32Array(ns)); } return { m: m, s: s }; }
+function liquidLayers(pl, p, o, rnd, layers, ev, lab) {
+  var ns = Math.ceil(pl.dur * FS), r = pl.r, tA = o.t0 + r / C, gs = [o.g1, o.g2, o.g3, o.g4], bf = lqBuffers(ns), k, i, pn = o.pan * 0.7;
+  if (pl.mode === 'pour') pourEvents(pl, rnd);
+  else if (pl.mode === 'quench') quenchEvents(pl, rnd);
+  liquidSynth(pl.evs, bf.m, bf.s, rnd, false);
+  if (pl.mode === 'pour') pourBeds(pl, bf.m, bf.s, rnd, ns);
+  else if (pl.mode === 'quench') quenchBeds(pl, bf.m, bf.s, rnd, ns);
+  for (k = 0; k < 4; k++) {
+    if (!(gs[k] > 0)) continue;
+    var L = new Float32Array(ns), R = new Float32Array(ns), m = bf.m[k], s = bf.s[k];
+    for (i = 0; i < ns; i++) { L[i] = (m[i] * (1 + pn) + s[i]) / r; R[i] = (m[i] * (1 - pn) - s[i]) / r; }
+    postLayer(L, r, o.ground); postLayer(R, r, o.ground);
+    layers.push({ L: L, R: R, t: tA, g: gs[k] });
+  }
+  ev.push({ k: 'impact', t: tA + pl.tMain, label: lab ? pl.label : '' });
+  if (pl.mode === 'splash' && pl.cav) ev.push({ k: 'launch', t: tA, label: lab ? 'slap' : '' });
+}
+function liquidSignal(pl, p, o, rnd, ns) {
+  var bf = lqBuffers(ns), gs = [o.g1, o.g2, o.g3, o.g4], mid = new Float32Array(ns), side = new Float32Array(ns), k, i, x, env = new Float32Array(ns);
+  pl.evs = [];
+  if (pl.mode === 'rain') rainEvents(pl, rnd);
+  else if (pl.mode === 'stream') streamEvents(pl, p, rnd);
+  else bubbleEvents(pl, p, rnd);
+  liquidSynth(pl.evs, bf.m, bf.s, rnd, true);
+  /* beds: the rush of a stream, the churn of a rolling boil, the hiss of an acid reaction; each wraps round */
+  var ph1 = rnd(), ph2 = rnd();
+  for (i = 0; i < ns; i++) env[i] = 1 + 0.3 * Math.sin(TAU * (2 * i / ns + ph1)) + 0.2 * Math.sin(TAU * (5 * i / ns + ph2));
+  if (pl.mode === 'stream') { x = jetNoise(ns, 700, rnd, true); bedAdd(bf.m[1], bf.s[1], x, env, 0.003 * Math.sqrt(p.lqRate / 300), 0); }
+  else if (pl.mode === 'bubble' && (pl.med === 'water' || pl.med === 'oil')) { x = jetNoise(ns, 450, rnd, true); bedAdd(bf.m[1], bf.s[1], x, env, 0.002 * Math.sqrt(p.lqRate / 100) * pl.heat * pl.heat, 0); }
+  else if (pl.mode === 'bubble' && pl.med === 'acid') { x = jetNoise(ns, 7000, rnd, true); bedAdd(bf.m[3], bf.s[3], x, env, 0.0015 * Math.sqrt(p.lqRate / 1000), 0); }
+  for (k = 0; k < 4; k++) for (i = 0; i < ns; i++) { mid[i] += bf.m[k][i] * gs[k]; side[i] += bf.s[k][i] * gs[k]; }
+  return { mid: mid, side: side };
+}
+
 /* ---------- recordings and impulse responses ----------
    Recordings and impulse responses come in from outside as assets: 48 kHz stereo Float32Arrays, set with setAsset()
    (the page decodes the files; the worker gets a copy). Three synthetic examples stand in until a file is loaded. */
@@ -2087,7 +2530,7 @@ function getHits(id, sens) { return readAsset('hits', id, (+sens).toFixed(2), fu
 var STRENGTH = {
   explosion: { keys: [['exW', 1]] }, implosion: { keys: [['imR0', 1 / 3]] }, destruction: { keys: [['dsMass', 1]] },
   discharge: { keys: [['dcEnergy', 1]] }, blaster: { keys: [['tgEnergy', 1], ['lnEnergy', 1], ['bvChannel', 1], ['bpEnergy', 1]] },
-  field: { keys: [['ffHitE', 1]], gain: true }
+  field: { keys: [['ffHitE', 1]], gain: true }, liquid: { keys: [['lqHeight', 1]] }
 };
 var MAX_TRIGGERS = 32;
 
@@ -2333,7 +2776,10 @@ function roomIR(p) {
 }
 
 /* ---------- seamless loops: hover, static burn, field hum ---------- */
-function isLoop(p) { return (p.kind === 'rocket' && p.rkMode === 'static') || (p.kind === 'rotor' && p.rtMode === 'hover') || (p.kind === 'field' && p.ffMode === 'hum'); }
+function isLoop(p) {
+  return (p.kind === 'rocket' && p.rkMode === 'static') || (p.kind === 'rotor' && p.rtMode === 'hover') || (p.kind === 'field' && p.ffMode === 'hum') ||
+    (p.kind === 'liquid' && (p.lqMode === 'stream' || p.lqMode === 'rain' || p.lqMode === 'bubble'));
+}
 /* The four layer groups (the Layer levels sliders). For a stem, every other group that is on gets a vanishing gain
    instead of zero: the code then takes exactly the same branches and random draws as the full mix, so the stems add
    up to the mix sample for sample. Every gain enters the mix linearly, which is what makes this hold. */
@@ -2349,6 +2795,7 @@ function renderLoop(p, seed, only, ext) {
   var o = sceneGains(p, only);
   if (pl.kind === 'rotor') { sig = rotorSignal(pl.rt, p, o, rnd, Np, true); r = pl.rt.r; }
   else if (pl.kind === 'field') { sig = fieldSignal(pl.ff, p, o, rnd, Np, true); r = pl.ff.r; }
+  else if (pl.kind === 'liquid') { sig = liquidSignal(pl.lq, p, o, rnd, Np); r = pl.lq.r; }
   else { sig = rocketStatic(pl, p, o, rnd, Np); r = pl.r; }
   var L = new Float32Array(Np), R = new Float32Array(Np);
   for (i = 0; i < Np; i++) { L[i] = (sig.mid[i] + sig.side[i]) / r; R[i] = (sig.mid[i] - sig.side[i]) / r; }
@@ -2383,7 +2830,7 @@ function planRep(p, seed, k, s) {
     if (kind === 'explosion') q.exDist = p.exDist * a; else if (kind === 'destruction') q.dsDist = p.dsDist * a;
     else if (kind === 'implosion') q.imDist = p.imDist * a; else if (kind === 'discharge') q.dcDist = p.dcDist * a;
     else if (kind === 'blaster') { q.miss = p.miss * a; q.bpStiff = p.bpStiff * (1 + j * 0.3 * (grnd() - 0.5)); q.bvSpeed = p.bvSpeed * (1 + j * 0.1 * (grnd() - 0.5)); }
-    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
+    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
     if (kind !== 'projectile') pan = j * 1.4 * (grnd() - 0.5);
   }
   if (kind === 'explosion') out = { ex: planExplosion(q.exW, q.exDist, Math.round(q.exFrags), Math.round(q.exDebris), grnd) };
@@ -2394,6 +2841,7 @@ function planRep(p, seed, k, s) {
   else if (kind === 'discharge') out = { dc: planDischarge(q, grnd) };
   else if (kind === 'blaster') out = { wp: planWeapon(q, grnd) };
   else if (kind === 'field') out = { ff: planField(q, grnd) };
+  else if (kind === 'liquid') out = { lq: planLiquid(q, grnd) };
   else if (kind === 'recording') out = { rc: planRecording(q) };
   else {
     out = analyzeProj(q); out.pay = null;
@@ -2447,6 +2895,7 @@ function mixScene(p, seed, only) {
     else if (pl.kind === 'discharge') dischargeLayers(pl.dc, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'blaster') weaponLayers(pl.wp, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'field') fieldLayers(pl.ff, q, o, rnd, layers, ev, lab);
+    else if (pl.kind === 'liquid') liquidLayers(pl.lq, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'recording') recordingLayers(pl.rc, q, o, rnd, layers, ev, lab);
     else projLayers(pl, q, o, rnd, layers, ev, lab);
     if (!trig) tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
@@ -2493,14 +2942,15 @@ function stretch(x, s) {
   return y;
 }
 function padTo(x, front, back) { var y = new Float32Array(front + x.length + back); y.set(x, front); return y; }
-function findOnsets(L, R) {
-  var N = L.length, pk = peakOf(L, R), fast = 0, slow = 0, last = -1e9, out = [];
+/* onsets from sample 'from' on; the samples before it only warm the detector */
+function findOnsets(L, R, from) {
+  var N = L.length, pk = peakOf(L, R), fast = 0, slow = 0, last = -1e9, out = [], n0 = from || 0;
   var aF = Math.exp(-1 / (0.012 * FS)), aSa = Math.exp(-1 / (0.03 * FS)), aSr = Math.exp(-1 / (0.25 * FS)), win = Math.round(0.02 * FS);
   for (var n = 0; n < N; n++) {
     var x = Math.max(Math.abs(L[n]), Math.abs(R[n]));
     fast = x > fast ? x : x + (fast - x) * aF;
     slow = x > slow ? x + (slow - x) * aSa : x + (slow - x) * aSr;
-    if (fast > 0.2 * pk && fast > 2.5 * slow && n - last > 0.14 * FS) {
+    if (n >= n0 && fast > 0.2 * pk && fast > 2.5 * slow && n - last > 0.14 * FS) {
       var lv = 0; for (var j = n; j < n + win && j < N; j++) lv = Math.max(lv, Math.abs(L[j]), Math.abs(R[j]));
       out.push({ n: n, level: lv }); last = n;
     }
@@ -2559,7 +3009,13 @@ function actionize(raw, a) {
   var maxN = 24 * FS;
   if (!loop && L.length > maxN) { L = L.slice(0, maxN); R = R.slice(0, maxN); }
   if (a.tail > 0 && !loop) { var extra = Math.min(maxN + 4 * FS - L.length, Math.round((1 + a.tail * 3) * FS)); L = padTo(L, 0, extra); R = padTo(R, 0, extra); }
-  var N = L.length, on = findOnsets(L, R);
+  var N = L.length, on = [];
+  if (loop) {
+    /* a loop's onsets come from the kept period, heard after one period of warm-up, and repeat in every period,
+       so a sub drop near the end wraps round the seam */
+    var Pl = Math.round(raw.L.length * slow);
+    findOnsets(L.subarray(0, 2 * Pl), R.subarray(0, 2 * Pl), Pl).forEach(function (o) { for (var k = 0; k < 3; k++) on.push({ n: o.n - Pl + k * Pl, level: o.level }); });
+  } else on = findOnsets(L, R);
   /* level references come from the kept period of a loop, not from its warm-up */
   function norm(target) {
     var a0 = 0, b0 = L.length, pk = 0, q, v;
@@ -3013,6 +3469,8 @@ var DEFAULTS = { kind: 'projectile',
   irAsset: 'ex:stair', irWet: -6,
   ffMode: 'hum', ffBase: 62, ffType: 'membrane', ffBeat: 1.5, ffShimmer: 0.5, ffCorona: 0.4, ffHitE: 2000, ffGlide: 0.6, ffDist: 3,
   ffB: 1, ffDens: 1e19, ffBeta: 0.3, ffAngle: 30, ffSaw: 0.4, ffSawT: 1.33, ffChorus: 0.4, ffSurface: 0.4, ffSoliton: 0.4,
+  lqMode: 'drop', lqMedium: 'water', lqDrop: 0.0023, lqHeight: 0.07, lqDepth: 0.2, lqMass: 0.2, lqFlow: 0.08, lqVessel: 0.12, lqFill: 0.9,
+  lqTemp: 650, lqThick: 0.002, lqRate: 300, lqSize: 1, lqHeat: 1, lqRain: 8, lqDist: 1.5,
   seqCount: 1, seqInterval: 0.12, seqJitter: 0.2, seqFrom: 'interval', seqAsset: 'ex:door', seqSens: 0.5, seqDyn: 0.7, seqGuide: -40,
   dsKnock: 'ex:knock', dsLike: 'glass', dsDebris: 'model', grAsset: 'ex:gravel',
   env: 'field', ground: 0.5, trimCrack: 0, trimLaunch: 0, trimWake: 0, trimImpact: 0 };
@@ -3108,7 +3566,25 @@ var PRESETS = [
   { id: 'tinroof', name: 'Rain on a tin roof', p: { kind: 'recording', rcAsset: 'ex:rain', rcBody: 'steel', rcThick: 0.6, rcSize: 3, rcDist: 3, env: 'indoor', trimCrack: -14 } },
   { id: 'lakeice', name: 'Rain on lake ice', p: { kind: 'recording', rcAsset: 'ex:rain', rcBody: 'ice', rcThick: 40, rcSize: 40, rcDist: 6, env: 'valley', trimCrack: -18 } },
   { id: 'laservoice', name: 'Voice through a dispersive line', p: { kind: 'recording', rcAsset: 'ex:voice', rcBody: 'line', rcLength: 25, rcDist: 2, env: 'indoor', trimCrack: -40 } },
-  { id: 'springvoice', name: 'Voice in a spring', p: { kind: 'recording', rcAsset: 'ex:voice', rcBody: 'spring', rcLength: 0.6, rcDist: 2, env: 'none', trimCrack: -10 } }
+  { id: 'springvoice', name: 'Voice in a spring', p: { kind: 'recording', rcAsset: 'ex:voice', rcBody: 'spring', rcLength: 0.6, rcDist: 2, env: 'none', trimCrack: -10 } },
+
+  { id: 'drip', name: 'Drip', p: { kind: 'liquid', lqMode: 'drop', env: 'room' } },
+  { id: 'cavedrip', name: 'Cave drip', p: { kind: 'liquid', lqMode: 'drop', lqDrop: 0.0026, lqHeight: 0.06, lqDepth: 0.5, lqDist: 4, env: 'cave' } },
+  { id: 'wetfloor', name: 'Drip on a wet floor', p: { kind: 'liquid', lqMode: 'drop', lqDrop: 0.0025, lqHeight: 1.5, lqDepth: 0.001, lqDist: 1.2, env: 'room' } },
+  { id: 'pondstone', name: 'Stone into a pond', p: { kind: 'liquid', lqMode: 'splash', lqMass: 0.25, lqHeight: 1.5, lqDepth: 1, lqDist: 3, env: 'forest' } },
+  { id: 'bodywater', name: 'Body into water', p: { kind: 'liquid', lqMode: 'splash', lqMass: 80, lqHeight: 1.5, lqDepth: 3, lqDist: 6, env: 'field' } },
+  { id: 'mudstep', name: 'Boot into mud', p: { kind: 'liquid', lqMode: 'splash', lqMedium: 'mud', lqMass: 2, lqHeight: 0.25, lqDepth: 0.05, lqDist: 1.5, env: 'field' } },
+  { id: 'pourglass', name: 'Pouring a glass', p: { kind: 'liquid', lqMode: 'pour', lqHeight: 0.15, lqDist: 0.8, env: 'room' } },
+  { id: 'bucket', name: 'Filling a bucket', p: { kind: 'liquid', lqMode: 'pour', lqFlow: 0.25, lqHeight: 0.6, lqVessel: 0.3, lqFill: 0.6, lqDist: 1.5, env: 'room' } },
+  { id: 'quench', name: 'Blade quench', p: { kind: 'liquid', lqMode: 'quench', lqMass: 0.1, lqThick: 0.0015, lqTemp: 600, lqDist: 1.2, env: 'room' } },
+  { id: 'brook', name: 'Brook, loop', p: { kind: 'liquid', lqMode: 'stream', lqRate: 300, lqDist: 3, env: 'forest' } },
+  { id: 'pondrain', name: 'Rain on a pond, loop', p: { kind: 'liquid', lqMode: 'rain', lqRain: 8, lqDist: 2, env: 'forest' } },
+  { id: 'drizzle', name: 'Drizzle on water, loop', p: { kind: 'liquid', lqMode: 'rain', lqRain: 1, lqDist: 1.5, env: 'forest' } },
+  { id: 'kettle', name: 'Kettle singing, loop', p: { kind: 'liquid', lqMode: 'bubble', lqRate: 120, lqHeat: 0.6, lqDist: 1, env: 'room' } },
+  { id: 'boil', name: 'Rolling boil, loop', p: { kind: 'liquid', lqMode: 'bubble', lqRate: 120, lqHeat: 1, lqDist: 1, env: 'room' } },
+  { id: 'mudpot', name: 'Mud pot, loop', p: { kind: 'liquid', lqMode: 'bubble', lqMedium: 'mud', lqRate: 6, lqDist: 3, env: 'field' } },
+  { id: 'lavapool', name: 'Lava pool, loop', p: { kind: 'liquid', lqMode: 'bubble', lqMedium: 'lava', lqRate: 2, lqDist: 6, env: 'cave' } },
+  { id: 'acidvat', name: 'Acid vat, loop', p: { kind: 'liquid', lqMode: 'bubble', lqMedium: 'acid', lqRate: 2500, lqDist: 1.5, env: 'room' } }
 ];
 var ACTION_DEFAULTS = { slowmo: 1, punch: 0, weight: 0, drive: 0, bite: 0, tail: 0, swell: 0, width: 0, loud: 0 };
 var ACTION_PRESETS = [
@@ -3133,6 +3609,6 @@ function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for 
 root.BFX = { qrCode: qrCode, qrSvg: qrSvg, packPlan: packPlan, unpackPlan: unpackPlan, setAsset: setAsset, getAsset: getAsset, removeAsset: removeAsset, xmpText: xmpText, ixmlText: ixmlText, keywordPaths: keywordPaths, getIR: getIR, detectHits: detectHits, getHits: getHits, measureModes: measureModes, getModes: getModes,
   getGrains: getGrains, features: features, distance: distance, matchScore: matchScore, posToVal: posToVal, monoOf: monoOf, BAND_HZ: BAND_HZ, MAX_TRIGGERS: MAX_TRIGGERS, FIT_TRIES: FIT_TRIES, triggered: triggered, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
   EXAMPLES: EXAMPLES, REC_MAX_S: REC_MAX_S, IR_MAX_S: IR_MAX_S, renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
-  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
+  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
   ACTION_DEFAULTS: ACTION_DEFAULTS, ACTION_PRESETS: ACTION_PRESETS, merge: merge, _wake: wakeLayer, _modal: modalHit, rng: rng };
 })(typeof self !== 'undefined' ? self : globalThis);

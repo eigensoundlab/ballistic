@@ -24,6 +24,14 @@ open it in any modern browser. Everything runs locally; nothing is uploaded.
 | Forcefield | A driven sheet of modes with beating generators, or a reduced plasma (MHD) model: slow, shear and fast waves, reconnection crashes, chorus, half-frequency ripple, solitons, kink disruption |
 | Recording | Your own sound, placed at a distance or flying past (Doppler, air, ground-bounce flanging), and optionally driving a body: a plate, a rail, a spring, a dispersive line or a recorded object |
 
+### Game sounds
+
+The second family of sources, for the rest of a game's world. Recording sits in both.
+
+| Source | What is modelled |
+|---|---|
+| Liquid | Bubbles ringing at their Minnaert pitch and climbing as they near the surface, drops trapping them in Oguz and Prosperetti's entrainment window, splashes whose air cavity pinches off into the plunk, a vessel's air column rising as it fills, hot steel quenched through film, transition and nucleate boiling, rain by Marshall and Palmer's drop sizes, streams by Deane and Stokes' bubble sizes, boiling that sings before it rolls, and viscous mud and lava whose domes ring before they burst; in water, oil, mud, lava or acid |
+
 Any event can repeat on a timeline (bursts, salvos, swarms), and every Fire is a fresh take from a new seed.
 
 ### The weapon chain
@@ -160,6 +168,9 @@ frequencies. Levels are physical for blasts, shocks and channel cracks. Where no
 struck bodies, aftermath, forcefields), the layer is set against the physical one, and the Layer levels panel says so.
 A recording has no known level: its body is set to its loudness, and only distance, air and ground bounce are physical.
 Real plasma waves are far above hearing, so the forcefield slows them down and shows the factor.
+A liquid's bubbles, impacts, bursts and droplets take their levels from size and speed; the stream noise, collapses,
+steam, crust and vessel resonance are set against them. A kettle's collapses are set so it sings louder than it boils,
+as measured kettles do.
 
 ## Working on it
 
