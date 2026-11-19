@@ -2753,6 +2753,127 @@ function voiceLayers(pl, p, o, rnd, layers, ev, lab) {
   ev.push({ k: 'launch', t: tA, label: lab ? pl.callName : '' });
 }
 
+/* ---------- handling ----------
+   Things picked up, dropped, put away and used. A dropped object bounces with restitution e: each bounce from e^2
+   of the height before, sooner by e. A coin then rolls on its rim like Euler's disk, its contact going round faster
+   and faster toward a finite-time stop (the rate grows about as (t_end - t)^-1/3). Paper and cloth crumple in clicks
+   whose energies follow a power law, as measured for paper (Houle and Sethna, 1996). A bottle's cork pops at the
+   bottle's Helmholtz frequency, and pouring from it glugs as air bubbles back in. A blade scrapes along its sheath and
+   rings as it clears. */
+var HANDS = {
+  coins: { mat: 'steel', m: 0.007, n: 5, e: 0.55, sc: 8 }, keys: { mat: 'steel', m: 0.012, n: 5, e: 0.3, sc: 6 },
+  potion: { mat: 'glass', m: 0.35, n: 1, e: 0.35, sc: 1.6, bottle: true }, blade: { mat: 'steel', m: 1.2, n: 1, e: 0.25, sc: 1.4, blade: true },
+  gem: { mat: 'glass', m: 0.01, n: 1, e: 0.5, sc: 7 }, armour: { mat: 'steel', m: 2.5, n: 3, e: 0.2, sc: 1.1 },
+  cloth: { soft: 0.3, m: 0.4, n: 1, e: 0.05, sc: 1 }, leather: { soft: 0.6, m: 0.8, n: 1, e: 0.08, sc: 1 }, paper: { soft: 1, m: 0.05, n: 1, e: 0.1, sc: 1 }
+};
+var HAND_GROUNDS = { wood: 'wood', stone: 'concrete', metal: 'steel', bag: null };
+/* crumpling: clicks with energies from a power law P(E) ~ E^-1.3, drawn by inverse sampling between e0 and 1000 e0 */
+function crumple(evs, g, t0, dur, rate, amp, hp, pan, rnd) {
+  var n = Math.round(rate * dur), i, u, E;
+  for (i = 0; i < n; i++) {
+    var tt = t0 + dur * rnd(); u = rnd();
+    E = Math.pow(1 - u * (1 - Math.pow(1000, -0.3)), -1 / 0.3);
+    evs.push(evClick(g, tt, 0.00015 + 0.0006 / Math.sqrt(E), amp * Math.sqrt(E / 1000), pan + 0.2 * (rnd() - 0.5)));
+  }
+  evs.push(evNoise(g, t0, dur * 0.5, hp, 12000, amp * 0.15, pan));
+}
+function planHand(q, grnd) {
+  var ob = HANDS[q.hdObject] || HANDS.coins, h = Math.max(q.hdHeight, 0.01), act = q.hdAction, bounces = [], k, t = 0;
+  if (act === 'drop') {
+    /* free fall, then bounces until a hop lasts under 5 ms */
+    var v = Math.sqrt(2 * GRAV * h), e = ob.e * (q.hdSurface === 'bag' ? 0.3 : q.hdSurface === 'wood' ? 0.85 : 1);
+    t = 0.05;
+    for (k = 0; k < 12; k++) {
+      var j = grnd();
+      bounces.push({ t: t, E: 0.5 * ob.m * v * v, pan: (j - 0.5) * 0.2 });
+      v *= e; var hop = 2 * v / GRAV;
+      if (hop < 0.005) break;
+      t += hop;
+    }
+  }
+  var spin = act === 'drop' && q.hdObject === 'coins' && q.hdSurface !== 'bag' ? 0.9 + 0.5 * grnd() : 0;
+  var dur = act === 'drop' ? t + spin + 0.9 : act === 'use' ? (ob.bottle ? 2.2 : ob.blade ? 1.6 : 1.4) : 1.1;
+  /* what sounds when, for the diagram */
+  var marks = act === 'drop' ? [] : act === 'pickup' ? [[0.08, 'lifted']] : act === 'equip' ? [[0.08, 'lifted'], [0.45, 'stowed'], [ob.blade ? 0.72 : 0.78, ob.blade ? 'guard' : 'clasp']] :
+    ob.bottle ? [[0.1, 'cork pops'], [0.5, 'glugs']] : ob.blade ? [[0.1, 'scrapes'], [0.56, 'clears, rings']] : ob.n > 1 ? [[0.1, 'one by one']] : ob.soft ? [[0.1, 'crumples']] : [[0.1, 'clink'], [0.32, 'clink']];
+  return { ob: ob, name: q.hdObject, act: act, h: h, surf: q.hdSurface, bounces: bounces, spin: spin, tSpin: t, dur: dur, r: Math.max(0.2, q.hdDist), n: ob.n, marks: marks,
+    tMain: bounces.length ? bounces[0].t : 0.1, label: act === 'drop' ? 'lands' : act };
+}
+function handLayers(pl, p, o, rnd, layers, ev, lab) {
+  var ns = Math.ceil(pl.dur * FS), r = pl.r, tA = o.t0 + r / C, g = [], sd = [], k, i, ob = pl.ob, evs = [], gspec = HAND_GROUNDS[pl.surf];
+  for (k = 0; k < 4; k++) { g.push(new Float32Array(ns)); sd.push(new Float32Array(ns)); }
+  function hit(k2, mat, E, sc, t, pan, opt) { var b = modalHit(mat, Math.max(E, 1e-9), sc, rnd, opt || { noGrains: true }), n0 = Math.round(t * FS); for (var j = 0; j < b.length && n0 + j < ns; j++) if (n0 + j >= 0) { g[k2][n0 + j] += b[j]; sd[k2][n0 + j] += b[j] * pan; } }
+  /* a handful of small hard things knocking together while they move */
+  function jingle(t, dur, count, E) { for (var j = 0; j < count; j++) { var tj = t + dur * rnd(), s2 = rnd(); hit(1, ob.mat, E * (0.3 + rnd()), ob.sc * (0.8 + 0.5 * s2), tj, (s2 - 0.5) * 0.5, { maxModes: 4, t60Scale: 0.25, noGrains: true }); } }
+  /* 1/100 of the impact energy reaches the modes, as for the mechanism's stops */
+  var EFF = STOP_EFF;
+  if (pl.act === 'drop') {
+    pl.bounces.forEach(function (b, bi) {
+      var E = b.E * EFF;
+      if (ob.soft) { evs.push(evNoise(0, b.t, 0.04, 80, 900, 0.3 * Math.sqrt(E), b.pan)); crumple(evs, 2, b.t, 0.12, 120 * ob.soft, 0.4 * Math.sqrt(E), 1500, b.pan, rnd); }
+      else {
+        for (var c = 0; c < pl.n; c++) hit(0, ob.mat, E / pl.n, ob.sc * (1 + 0.08 * c), b.t + 0.004 * c * rnd(), b.pan + 0.1 * c, { noGrains: true });
+        if (pl.n > 1 && bi === 0) jingle(b.t, 0.15, 3 * pl.n, E / pl.n * 0.2);
+      }
+      /* a soft thing lands over a long contact: a dull thud, not the floor's ring */
+      if (gspec && !ob.soft) hit(3, gspec, E * 0.5, 1, b.t, b.pan, { noGrains: true });
+      else evs.push(evNoise(3, b.t, 0.05, 100, 1500, 0.4 * Math.sqrt(E), b.pan));
+    });
+    if (pl.spin) {
+      /* rolling on the rim, the contact circles faster toward the stop, then the coin slaps flat */
+      var t0 = pl.tSpin, T = pl.spin, tt = 0, E0 = pl.bounces[0].E * EFF * 0.02;
+      while (tt < T * 0.995) {
+        var rate = 18 * Math.pow(1 - tt / T, -1 / 3);
+        hit(1, ob.mat, E0 * (1 - 0.7 * tt / T), ob.sc, t0 + tt, 0.05, { maxModes: 3, t60Scale: 0.1, noGrains: true });
+        tt += 1 / rate;
+      }
+      hit(0, ob.mat, E0 * 4, ob.sc, t0 + T, 0.05, { noGrains: true });
+      if (gspec) hit(3, gspec, E0 * 2, 1.5, t0 + T, 0.05, { noGrains: true });
+    }
+  } else if (pl.act === 'pickup' || pl.act === 'equip') {
+    /* off the surface with a scrape; into a pouch, a belt or a sheath */
+    var E1 = ob.m * GRAV * 0.05 * EFF;
+    evs.push(evNoise(2, 0.08, 0.05, 1200, 7000, 0.02 * Math.sqrt(ob.m), 0));
+    if (!ob.soft) { if (pl.n > 1) jingle(0.1, 0.35, 4 * pl.n, E1 / pl.n); else hit(0, ob.mat, E1, ob.sc, 0.1, 0, { noGrains: true, maxModes: 4 }); }
+    else crumple(evs, 2, 0.1, 0.35, 160 * ob.soft, 0.02 * Math.sqrt(ob.m), 1200, 0, rnd);
+    if (pl.act === 'equip') {
+      crumple(evs, 2, 0.45, 0.3, 90, 0.015, 900, 0.1, rnd);
+      if (ob.blade) { evs.push(evNoise(2, 0.5, 0.18, 2500, 9000, 0.05, 0)); hit(0, 'steel', E1 * 0.5, 4, 0.72, 0, { maxModes: 4, t60Scale: 0.2, noGrains: true }); }
+      else hit(1, 'steel', 0.002 * EFF * 10, 6, 0.78, 0.1, { maxModes: 3, t60Scale: 0.1, noGrains: true });
+    }
+  } else {
+    /* use */
+    if (ob.bottle) {
+      /* the cork pops at the bottle's Helmholtz pitch: neck 1 cm across, 5 cm long, 0.3 l; then three glugs and a pour */
+      var A = Math.PI * 0.01 * 0.01, fH = C / TAU * Math.sqrt(A / (0.0003 * (0.05 + 1.7 * 0.01)));
+      evs.push(evTone(0, 0.1, fH, 0.012, 0.4, 0.25, 0));
+      evs.push(evNoise(2, 0.1, 0.01, 300, 4000, 0.1, 0));
+      for (k = 0; k < 7; k++) { var tg = 0.5 + 0.17 * k + 0.03 * rnd(), fill = 0.8 - 0.1 * k; evs.push(evRing(1, tg, 0.006 + 0.002 * rnd(), 0.05, 0.08, 0.4, 0.03, 0, LIQUIDS.water)); evs.push(evTone(0, tg, fH * Math.sqrt(1 / (1 - fill * 0.9)), 0.02, 0.05, 0, 0)); }
+      for (k = 0; k < 120; k++) { var tp = 0.5 + 1.2 * rnd(); evs.push(evRing(2, tp, 0.0005 + 0.002 * rnd(), 0.02, 0.03, 0.5, 0.08, 0.1, LIQUIDS.water)); }
+    } else if (ob.blade) {
+      /* drawn: steel scraping on the sheath mouth, then free and ringing */
+      var sn = unitNoise(Math.round(0.45 * FS), rnd, 9000, 2500), n0 = Math.round(0.1 * FS);
+      for (i = 0; i < sn.length && n0 + i < ns; i++) { var x = i / sn.length; g[2][n0 + i] += 0.08 * sn[i] * Math.sin(Math.PI * Math.min(1, x * 1.2)) * (0.6 + 0.4 * Math.sin(TAU * 23 * i / FS)); }
+      hit(0, 'steel', 0.4 * EFF, ob.sc, 0.56, 0.1, { noGrains: true, t60Scale: 1.2 });
+    } else if (pl.n > 1) {
+      /* counted out one by one, or shaken */
+      for (k = 0; k < pl.n * 2; k++) hit(0, ob.mat, ob.m * GRAV * 0.03 * EFF, ob.sc * (0.9 + 0.2 * rnd()), 0.1 + 0.13 * k + 0.02 * rnd(), (rnd() - 0.5) * 0.3, { noGrains: true, maxModes: 5 });
+      jingle(0.1, 0.13 * pl.n * 2, pl.n * 3, ob.m * GRAV * 0.01 * EFF);
+    } else if (ob.soft) crumple(evs, 2, 0.1, 0.9, 260 * ob.soft, 0.03 * Math.sqrt(ob.m + 0.1), 1500, 0, rnd);
+    else { hit(0, ob.mat, ob.m * GRAV * 0.05 * EFF, ob.sc, 0.1, -0.2, { noGrains: true }); hit(0, ob.mat, ob.m * GRAV * 0.04 * EFF, ob.sc * 1.03, 0.32, 0.2, { noGrains: true }); }
+  }
+  liquidSynth(evs, g, sd, rnd, false);
+  var gs = [o.g1, o.g2, o.g3, o.g4], pn = o.pan * 0.7;
+  for (k = 0; k < 4; k++) {
+    if (!(gs[k] > 0)) continue;
+    var L = new Float32Array(ns), R = new Float32Array(ns);
+    for (i = 0; i < ns; i++) { L[i] = (g[k][i] * (1 + pn) + sd[k][i]) / r; R[i] = (g[k][i] * (1 - pn) - sd[k][i]) / r; }
+    postLayer(L, r, o.ground); postLayer(R, r, o.ground);
+    layers.push({ L: L, R: R, t: tA, g: gs[k] });
+  }
+  ev.push({ k: 'impact', t: tA + pl.tMain, label: lab ? pl.label : '' });
+}
+
 /* ---------- recordings and impulse responses ----------
    Recordings and impulse responses come in from outside as assets: 48 kHz stereo Float32Arrays, set with setAsset()
    (the page decodes the files; the worker gets a copy). Three synthetic examples stand in until a file is loaded. */
@@ -3094,7 +3215,7 @@ var STRENGTH = {
   explosion: { keys: [['exW', 1]] }, implosion: { keys: [['imR0', 1 / 3]] }, destruction: { keys: [['dsMass', 1]] },
   discharge: { keys: [['dcEnergy', 1]] }, blaster: { keys: [['tgEnergy', 1], ['lnEnergy', 1], ['bvChannel', 1], ['bpEnergy', 1]] },
   field: { keys: [['ffHitE', 1]], gain: true }, liquid: { keys: [['lqHeight', 1]] },
-  mechanism: { keys: [], gain: true }, heat: { keys: [], gain: true }, footsteps: { keys: [], gain: true }, voice: { keys: [], gain: true }
+  mechanism: { keys: [], gain: true }, heat: { keys: [], gain: true }, footsteps: { keys: [], gain: true }, voice: { keys: [], gain: true }, handling: { keys: [], gain: true }
 };
 var MAX_TRIGGERS = 32;
 
@@ -3394,7 +3515,7 @@ function planRep(p, seed, k, s) {
     if (kind === 'explosion') q.exDist = p.exDist * a; else if (kind === 'destruction') q.dsDist = p.dsDist * a;
     else if (kind === 'implosion') q.imDist = p.imDist * a; else if (kind === 'discharge') q.dcDist = p.dcDist * a;
     else if (kind === 'blaster') { q.miss = p.miss * a; q.bpStiff = p.bpStiff * (1 + j * 0.3 * (grnd() - 0.5)); q.bvSpeed = p.bvSpeed * (1 + j * 0.1 * (grnd() - 0.5)); }
-    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'heat') q.thDist = p.thDist * a; else if (kind === 'footsteps') q.ftDist = p.ftDist * a; else if (kind === 'voice') q.crDist = p.crDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
+    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'heat') q.thDist = p.thDist * a; else if (kind === 'footsteps') q.ftDist = p.ftDist * a; else if (kind === 'voice') q.crDist = p.crDist * a; else if (kind === 'handling') q.hdDist = p.hdDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
     if (kind !== 'projectile') pan = j * 1.4 * (grnd() - 0.5);
   }
   if (kind === 'explosion') out = { ex: planExplosion(q.exW, q.exDist, Math.round(q.exFrags), Math.round(q.exDebris), grnd) };
@@ -3410,6 +3531,7 @@ function planRep(p, seed, k, s) {
   else if (kind === 'heat') out = { th: planHeat(q, grnd) };
   else if (kind === 'footsteps') out = { ft: planFeet(q, grnd) };
   else if (kind === 'voice') out = { cr: planVoice(q, grnd) };
+  else if (kind === 'handling') out = { hd: planHand(q, grnd) };
   else if (kind === 'recording') out = { rc: planRecording(q) };
   else {
     out = analyzeProj(q); out.pay = null;
@@ -3468,6 +3590,7 @@ function mixScene(p, seed, only) {
     else if (pl.kind === 'heat') heatLayers(pl.th, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'footsteps') feetLayers(pl.ft, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'voice') voiceLayers(pl.cr, q, o, rnd, layers, ev, lab);
+    else if (pl.kind === 'handling') handLayers(pl.hd, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'recording') recordingLayers(pl.rc, q, o, rnd, layers, ev, lab);
     else projLayers(pl, q, o, rnd, layers, ev, lab);
     if (!trig) tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
@@ -4048,6 +4171,7 @@ var DEFAULTS = { kind: 'projectile',
   thMode: 'cool', thMat: 'steel', thMass: 8, thDT: 400, thTime: 8, thJoints: 6, thStrength: 0.6, thDist: 1.5,
   ftMass: 75, ftLegs: '2', ftFoot: 'boot', ftSurface: 'concrete', ftGait: 'walk', ftSteps: 6, ftGear: 0, ftDist: 2,
   crType: 'beast', crCall: 'attack', crMass: 190, crPitch: 1, crTract: 1, crEffort: 1, crRough: 1, crLength: 1, crDist: 5,
+  hdObject: 'coins', hdAction: 'drop', hdHeight: 0.3, hdSurface: 'wood', hdDist: 0.8,
   seqCount: 1, seqInterval: 0.12, seqJitter: 0.2, seqFrom: 'interval', seqAsset: 'ex:door', seqSens: 0.5, seqDyn: 0.7, seqGuide: -40,
   dsKnock: 'ex:knock', dsLike: 'glass', dsDebris: 'model', grAsset: 'ex:gravel',
   env: 'field', ground: 0.5, trimCrack: 0, trimLaunch: 0, trimWake: 0, trimImpact: 0 };
@@ -4216,7 +4340,23 @@ var PRESETS = [
   { id: 'dragon', name: 'Dragon roar', p: { kind: 'voice', crType: 'reptile', crMass: 5000, crDist: 20, env: 'valley' } },
   { id: 'robotalert', name: 'Robot alert', p: { kind: 'voice', crType: 'robot', crCall: 'alert', crMass: 50, seqCount: 3, seqInterval: 0.25, crDist: 2, env: 'indoor' } },
   { id: 'robottaunt', name: 'Robot taunt', p: { kind: 'voice', crType: 'robot', crMass: 200, crDist: 3, env: 'indoor' } },
-  { id: 'robotdown', name: 'Robot shutting down', p: { kind: 'voice', crType: 'robot', crCall: 'death', crMass: 100, crDist: 2, env: 'indoor' } }
+  { id: 'robotdown', name: 'Robot shutting down', p: { kind: 'voice', crType: 'robot', crCall: 'death', crMass: 100, crDist: 2, env: 'indoor' } },
+
+  { id: 'coindrop', name: 'Coins dropped on a table', p: { kind: 'handling', env: 'room' } },
+  { id: 'coinpick', name: 'Picking up coins', p: { kind: 'handling', hdAction: 'pickup', env: 'room' } },
+  { id: 'coincount', name: 'Counting coins', p: { kind: 'handling', hdAction: 'use', env: 'room' } },
+  { id: 'keys', name: 'Keys', p: { kind: 'handling', hdObject: 'keys', hdAction: 'use', env: 'room' } },
+  { id: 'potion', name: 'Uncorking a potion', p: { kind: 'handling', hdObject: 'potion', hdAction: 'use', env: 'room' } },
+  { id: 'potiondrop', name: 'Potion dropped', p: { kind: 'handling', hdObject: 'potion', hdHeight: 0.8, hdSurface: 'stone', env: 'room' } },
+  { id: 'draw', name: 'Drawing a sword', p: { kind: 'handling', hdObject: 'blade', hdAction: 'use', env: 'room' } },
+  { id: 'sheathe', name: 'Sheathing a sword', p: { kind: 'handling', hdObject: 'blade', hdAction: 'equip', env: 'room' } },
+  { id: 'sworddrop', name: 'Sword dropped on stone', p: { kind: 'handling', hdObject: 'blade', hdHeight: 1, hdSurface: 'stone', hdDist: 1.5, env: 'indoor' } },
+  { id: 'gem', name: 'Gem picked up', p: { kind: 'handling', hdObject: 'gem', hdAction: 'pickup', env: 'room' } },
+  { id: 'armouron', name: 'Putting on armour', p: { kind: 'handling', hdObject: 'armour', hdAction: 'equip', hdDist: 1, env: 'room' } },
+  { id: 'armourdrop', name: 'Armour dropped', p: { kind: 'handling', hdObject: 'armour', hdHeight: 0.6, hdSurface: 'stone', hdDist: 1.5, env: 'indoor' } },
+  { id: 'intobag', name: 'Into the bag', p: { kind: 'handling', hdObject: 'leather', hdAction: 'equip', env: 'room' } },
+  { id: 'scroll', name: 'Unrolling a scroll', p: { kind: 'handling', hdObject: 'paper', hdAction: 'use', env: 'room' } },
+  { id: 'clothes', name: 'Clothes dropped', p: { kind: 'handling', hdObject: 'cloth', hdHeight: 1, env: 'room' } }
 ];
 var ACTION_DEFAULTS = { slowmo: 1, punch: 0, weight: 0, drive: 0, bite: 0, tail: 0, swell: 0, width: 0, loud: 0 };
 var ACTION_PRESETS = [
@@ -4241,6 +4381,6 @@ function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for 
 root.BFX = { qrCode: qrCode, qrSvg: qrSvg, packPlan: packPlan, unpackPlan: unpackPlan, setAsset: setAsset, getAsset: getAsset, removeAsset: removeAsset, xmpText: xmpText, ixmlText: ixmlText, keywordPaths: keywordPaths, getIR: getIR, detectHits: detectHits, getHits: getHits, measureModes: measureModes, getModes: getModes,
   getGrains: getGrains, features: features, distance: distance, matchScore: matchScore, posToVal: posToVal, monoOf: monoOf, BAND_HZ: BAND_HZ, MAX_TRIGGERS: MAX_TRIGGERS, FIT_TRIES: FIT_TRIES, triggered: triggered, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
   EXAMPLES: EXAMPLES, REC_MAX_S: REC_MAX_S, IR_MAX_S: IR_MAX_S, renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
-  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, MECH_MATS: MECH_MATS, GROUNDS: GROUNDS, FEET: FEET, CALLS: CALLS, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
+  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, MECH_MATS: MECH_MATS, GROUNDS: GROUNDS, FEET: FEET, CALLS: CALLS, HANDS: HANDS, _crumple: crumple, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
   ACTION_DEFAULTS: ACTION_DEFAULTS, ACTION_PRESETS: ACTION_PRESETS, merge: merge, _wake: wakeLayer, _modal: modalHit, rng: rng };
 })(typeof self !== 'undefined' ? self : globalThis);

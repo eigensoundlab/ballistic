@@ -32,7 +32,7 @@ test('presets use only known parameters and every source type has presets', () =
     kinds.add(pr.p.kind || 'projectile');
   }
   assert.equal(new Set(B.PRESETS.map(pr => pr.id)).size, B.PRESETS.length, 'preset ids are unique');
-  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism', 'heat', 'footsteps', 'voice']) assert.ok(kinds.has(k), k);
+  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism', 'heat', 'footsteps', 'voice', 'handling']) assert.ok(kinds.has(k), k);
 });
 
 test('every preset renders finite, audible, normalised audio', () => {
@@ -572,3 +572,26 @@ test('a voice is periodic at its pitch, and a rough call doubles its period', ()
   const rough = at({ crCall: 'idle', crMass: 70, crRough: 6 }, 1);
   assert.ok(Math.abs(rough.rate / (f0 / 2) - 1) < 0.1 || rough.rate < 0.6 * f0, `rough part repeats at ${rough.rate}, half of ${f0}`);
 });
+
+const hand = o => B.merge(B.DEFAULTS, Object.assign({ kind: 'handling', env: 'none', ground: 0 }, o));
+
+test('a dropped object bounces by restitution: each hop shorter by e, and a coin spins out like Euler\'s disk', () => {
+  const hd = B.analyze(hand({ hdObject: 'gem', hdHeight: 0.5, hdSurface: 'stone' }), 3).hd, b = hd.bounces;
+  assert.ok(Math.abs(b[0].t - 0.05) < 1e-12 && b.length >= 3);
+  for (let k = 2; k < b.length; k++) assert.ok(Math.abs((b[k].t - b[k - 1].t) / (b[k - 1].t - b[k - 2].t) - hd.ob.e) < 1e-9);
+  assert.ok(Math.abs(b[0].E - hd.ob.m * 9.81 * 0.5) < 1e-9);
+  const coin = B.analyze(hand({ hdSurface: 'wood' }), 3).hd;
+  assert.ok(coin.spin > 0.8, 'a coin rolls out');
+  assert.equal(B.analyze(hand({ hdSurface: 'bag' }), 3).hd.spin, 0, 'not in a bag');
+});
+
+test('paper crumples in clicks whose energies follow a power law', () => {
+  const evs = [], rnd = B.rng(7);
+  /* sample the click amplitudes; P(E) ~ E^-1.3 means a decade more energy is 10^0.3 times rarer per unit log E */
+  const src = require_crumple();
+  src(evs, 0, 0, 1, 20000, 1, 1500, 0, rnd);
+  const E = evs.filter(e => e.k === 1).map(e => (e.amp / 1) ** 2 * 1000), dec = [0, 0, 0];
+  for (const v of E) { const d = Math.floor(Math.log10(v)); if (d >= 0 && d < 3) dec[d]++; }
+  for (let d = 1; d < 3; d++) assert.ok(Math.abs(Math.log10(dec[d - 1] / dec[d]) - 0.3) < 0.08, `decades ${dec}`);
+});
+function require_crumple() { return B._crumple; }

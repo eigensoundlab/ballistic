@@ -17,10 +17,10 @@ function fPress(v) { return v >= 1000 ? (v / 1000).toFixed(v >= 1e5 ? 0 : 1) + '
 function fCount(v) { return String(Math.round(v)); }
 
 var KINDS = [['projectile', 'Projectile'], ['explosion', 'Explosion'], ['implosion', 'Implosion'], ['destruction', 'Destruction'], ['rocket', 'Jet, rocket'], ['rotor', 'Rotor'],
-  ['discharge', 'Discharge'], ['blaster', 'Blaster'], ['field', 'Forcefield'], ['liquid', 'Liquid'], ['mechanism', 'Mechanism'], ['heat', 'Heat'], ['footsteps', 'Footsteps'], ['voice', 'Voice'], ['recording', 'Recording']];
+  ['discharge', 'Discharge'], ['blaster', 'Blaster'], ['field', 'Forcefield'], ['liquid', 'Liquid'], ['mechanism', 'Mechanism'], ['heat', 'Heat'], ['footsteps', 'Footsteps'], ['voice', 'Voice'], ['handling', 'Handling'], ['recording', 'Recording']];
 /* two families of sources; Recording places any sound, so it sits in both */
 var SECTIONS = [['action', 'Weapons and energy', ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording']],
-  ['game', 'Game sounds', ['liquid', 'mechanism', 'heat', 'footsteps', 'voice', 'recording']]];
+  ['game', 'Game sounds', ['liquid', 'mechanism', 'heat', 'footsteps', 'voice', 'handling', 'recording']]];
 function inSection(sec, k) { return SECTIONS.filter(function (x) { return x[0] === sec; })[0][2].indexOf(k) >= 0; }
 function sectionFor(k) { return inSection(st.section, k) ? st.section : SECTIONS.filter(function (x) { return x[2].indexOf(k) >= 0; })[0][0]; }
 var MATS = [['glass', 'Glass'], ['wood', 'Wood'], ['concrete', 'Concrete'], ['steel', 'Steel']];
@@ -40,7 +40,8 @@ var TRIMS = {
   mechanism: [['Drive', 'motor, gears, pump, air'], ['Path', 'rails, ring gear, creak'], ['Body', 'panel modes, rattle'], ['Ends', 'latch, stop, seal, bolt']],
   heat: [['Pings, fizz', 'slips, bubbles, sparks, crackle'], ['Creaks', 'creaks, groans'], ['Body', 'snaps, the break, the fall, lava'], ['Hiss', 'gas, steam, torch roar']],
   footsteps: [['Heel', 'strike, weight'], ['Surface', 'grains, creaks, rattle, splash'], ['Roll', 'toe, scuff, squeak'], ['Gear', 'what it carries, servos']],
-  voice: [['Voice', 'folds through the tract'], ['Roughness', 'growl, subharmonics, ring'], ['Breath', 'aspiration, hiss'], ['Body', 'chest, or the robot\'s can']]
+  voice: [['Voice', 'folds through the tract'], ['Roughness', 'growl, subharmonics, ring'], ['Breath', 'aspiration, hiss'], ['Body', 'chest, or the robot\'s can']],
+  handling: [['Object', 'rings, clinks, pop'], ['Contacts', 'jingle, spin, glugs'], ['Material', 'crumple, scrape, pour'], ['Surface', 'floor, table, bag']]
 };
 var MIX_NOTE = {
   projectile: '0 dB keeps the physical balance between layers.',
@@ -57,9 +58,10 @@ var MIX_NOTE = {
   mechanism: 'Stops, latches and bolts are struck with the energy the panel carries, a hundredth of it reaching its modes. Drive, path and rattle levels are set against them, not measured.',
   heat: 'Pings and creaks follow the temperature: each joint slips when its strain passes its grip. Groans, fizz, steam, roar and the fall are set against them, not measured.',
   footsteps: 'The heel strike and its weight follow the walker\'s mass and gait. Surface, scuff and gear levels are set against them, not measured.',
-  voice: 'The voice is set to a level that grows with body size and effort. Roughness, breath and body follow from the same source; the chest is set against the voice.'
+  voice: 'The voice is set to a level that grows with body size and effort. Roughness, breath and body follow from the same source; the chest is set against the voice.',
+  handling: 'Drops strike with a hundredth of their energy, bounce by restitution and spin out by Euler\'s disk. Crumples, scrapes, glugs and the pop are set against them, not measured.'
 };
-var CR = ['voice'], FT = ['footsteps'], TH = ['heat'], MC = ['mechanism'], LQ = ['liquid'], P = ['projectile'], X = ['explosion'], I = ['implosion'], D = ['destruction'], K = ['rocket'], T = ['rotor'], PK = ['projectile', 'rocket'], PKT = ['projectile', 'rocket', 'rotor'], G = ['discharge'], W = ['blaster'], F = ['field'], PKTW = ['projectile', 'rocket', 'rotor', 'blaster'], RC = ['recording'], PKW = ['projectile', 'rocket', 'blaster'];
+var HD = ['handling'], CR = ['voice'], FT = ['footsteps'], TH = ['heat'], MC = ['mechanism'], LQ = ['liquid'], P = ['projectile'], X = ['explosion'], I = ['implosion'], D = ['destruction'], K = ['rocket'], T = ['rotor'], PK = ['projectile', 'rocket'], PKT = ['projectile', 'rocket', 'rotor'], G = ['discharge'], W = ['blaster'], F = ['field'], PKTW = ['projectile', 'rocket', 'rotor', 'blaster'], RC = ['recording'], PKW = ['projectile', 'rocket', 'blaster'];
 function fLen(v) { return v >= 1000 ? (v / 1000).toFixed(2) + ' km' : v >= 1 ? v.toFixed(1) + ' m' : v >= 0.01 ? (v * 100).toFixed(1) + ' cm' : (v * 1000).toFixed(1) + ' mm'; }
 function fForce(v) { return v >= 1e6 ? (v / 1e6).toFixed(2) + ' MN' : v >= 1000 ? (v / 1000).toFixed(1) + ' kN' : v.toFixed(0) + ' N'; }
 function fSpeed(v) { return v.toFixed(0) + ' m/s'; }
@@ -194,6 +196,10 @@ var SPEC = [
   { bank: 'source', kinds: TH, when: thIs('heat', 'cool'), id: 'thDT', label: 'Temperature change', min: 5, max: 1000, scale: 'log', fmt: function (v) { return v.toFixed(0) + ' K'; } },
   { bank: 'source', kinds: TH, when: thIs('heat', 'cool'), id: 'thJoints', label: 'Joints', hint: 'each slips two or three times', min: 1, max: 200, scale: 'log', round: 1, fmt: fCount },
   { bank: 'source', kinds: TH, id: 'thTime', label: 'Time', hint: 'for the change, or until it gives way', min: 0.5, max: 12, scale: 'log', fmt: fTime },
+  { bank: 'source', kinds: HD, id: 'hdObject', label: 'Object', options: [['coins', 'Coins'], ['keys', 'Keys'], ['potion', 'Potion bottle'], ['blade', 'Sword'], ['gem', 'Gem'], ['armour', 'Armour plates'], ['cloth', 'Cloth'], ['leather', 'Leather bag'], ['paper', 'Paper, scroll']] },
+  { bank: 'source', kinds: HD, id: 'hdAction', label: 'Action', options: [['pickup', 'Pick up'], ['drop', 'Drop'], ['equip', 'Put away, equip'], ['use', 'Use']] },
+  { bank: 'source', kinds: HD, when: function (p) { return p.hdAction === 'drop'; }, id: 'hdHeight', label: 'Dropped from', min: 0.01, max: 3, scale: 'log', fmt: fLen },
+  { bank: 'source', kinds: HD, when: function (p) { return p.hdAction === 'drop'; }, id: 'hdSurface', label: 'Onto', options: [['wood', 'Wood'], ['stone', 'Stone'], ['metal', 'Metal'], ['bag', 'Into a bag']] },
   { bank: 'source', kinds: CR, id: 'crType', label: 'Creature', options: [['beast', 'Beast, mammal'], ['reptile', 'Reptile'], ['robot', 'Robot']] },
   { bank: 'source', kinds: CR, id: 'crCall', label: 'Call', options: [['idle', 'Idle, grunt'], ['alert', 'Alert, bark'], ['attack', 'Attack, roar'], ['pain', 'Pain'], ['death', 'Death']] },
   { bank: 'source', kinds: CR, id: 'crMass', label: 'Body mass', hint: 'sets tract and pitch', min: 0.05, max: 20000, scale: 'log', fmt: fMass },
@@ -258,6 +264,7 @@ var SPEC = [
   { bank: 'scene', kinds: LQ, id: 'lqDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: MC, id: 'mcDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: TH, id: 'thDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
+  { bank: 'scene', kinds: HD, id: 'hdDist', label: 'Distance', min: 0.2, max: 20, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: CR, id: 'crDist', label: 'Distance', min: 0.3, max: 200, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: FT, id: 'ftDist', label: 'Distance', min: 0.3, max: 100, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: X, id: 'exDist', label: 'Distance', min: 3, max: 3000, scale: 'log', fmt: fDist },
@@ -433,6 +440,7 @@ function capText() {
     mechanism: 'Speed of the moving edge against time, and what sounds when.',
     footsteps: 'Each footfall, left and right, with its load.',
     voice: 'Pitch and formants against time; formant spacing tells the size.',
+    handling: st.p.hdAction === 'drop' ? 'Height of each bounce against time.' : 'What sounds when.',
     heat: st.p.thMode === 'heat' || st.p.thMode === 'cool' ? 'Temperature against time; each mark is a joint slipping.' : 'How hard it works against time, and when the part gives way.',
     field: st.p.ffType === 'plasma' ? 'Slow, shear and fast waves, plus the half-frequency ripple.' : 'Modes of the field, level against frequency.' }[k];
 }
@@ -558,6 +566,7 @@ function srcDelay() {
   if (an.kind === 'heat') return an.th.r / C;
   if (an.kind === 'footsteps') return an.ft.r / C;
   if (an.kind === 'voice') return an.cr.r / C;
+  if (an.kind === 'handling') return an.hd.r / C;
   return 0;
 }
 function restTime() {
@@ -580,6 +589,7 @@ function restTime() {
   if (an.kind === 'heat') return an.th.tMain + srcDelay();
   if (an.kind === 'footsteps') return an.ft.tMain + srcDelay();
   if (an.kind === 'voice') return an.cr.dur * 0.4 + srcDelay();
+  if (an.kind === 'handling') return an.hd.tMain + srcDelay();
   if (an.kind === 'recording') return an.rc.fly ? an.rc.dur / 2 + an.rc.missD / C : 0;
   if (!an.tr) return 0;
   if (an.kind === 'rocket' && !an.crack) return an.flight * 0.6;
@@ -1125,6 +1135,35 @@ function sceneVoice(g, W, H, tw) {
   caption(g, W, 'pitch (line) and formants (bands)', 'spacing ' + fHz(cr.dF));
   function contourAt(pts, x) { for (var q = 1; q < pts.length; q++) if (x <= pts[q][0]) return pts[q - 1][1] + (pts[q][1] - pts[q - 1][1]) * (x - pts[q - 1][0]) / (pts[q][0] - pts[q - 1][0]); return pts[pts.length - 1][1]; }
 }
+function sceneHand(g, W, H, tw) {
+  var hd = an.hd, mL = 16, mR = 16, mT = 24, mB = 22, pw = W - mL - mR, ph = H - mT - mB, tmax = hd.dur, ts = tw - srcDelay();
+  function X(t) { return mL + t / tmax * pw; }
+  g.font = '10px ' + col.mono; g.lineWidth = 1;
+  rangeTicks(g, X, tmax, W, H, mL, mR, 's');
+  if (hd.act === 'drop' && hd.bounces.length) {
+    /* each hop as a parabola, heights to scale */
+    var b = hd.bounces, h0 = hd.h, Y = function (hh) { return H - mB - hh / h0 * (ph - 6); }, k, i;
+    g.strokeStyle = col.tracer; g.lineWidth = 2; g.beginPath(); g.moveTo(X(0), Y(h0));
+    for (i = 1; i <= 20; i++) { var tt = b[0].t * i / 20; g.lineTo(X(tt), Y(h0 - 0.5 * GRAVITY * (tt - 0) * (tt - 0) * h0 / (0.5 * GRAVITY * b[0].t * b[0].t))); }
+    for (k = 0; k + 1 < b.length; k++) {
+      var d = b[k + 1].t - b[k].t, hk = GRAVITY * d * d / 8;
+      for (i = 1; i <= 16; i++) { var u = i / 16; g.lineTo(X(b[k].t + u * d), Y(4 * hk * u * (1 - u))); }
+    }
+    g.stroke(); g.lineWidth = 1;
+    if (hd.spin) { g.fillStyle = col.shock; g.fillRect(X(hd.tSpin), H - mB - 6, X(hd.tSpin + hd.spin) - X(hd.tSpin), 4); g.textAlign = 'left'; g.fillText('spins out', X(hd.tSpin), H - mB - 10); }
+    b.forEach(function (bb) { g.fillStyle = playing && ts >= bb.t ? col.shock : col.muted; g.fillRect(Math.round(X(bb.t)) - 1, H - mB - 3, 3, 3); });
+    caption(g, W, b.length + ' bounces from ' + fLen(hd.h), hd.spin ? 'Euler’s disk' : '');
+  } else {
+    hd.marks.forEach(function (m, k) {
+      var xm = Math.round(X(m[0])) + 0.5, lit = playing && ts >= m[0];
+      g.strokeStyle = lit ? col.tracer : col.shock; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(xm, mT + 14 * (k % 2)); g.lineTo(xm, H - mB); g.stroke(); g.setLineDash([]);
+      g.fillStyle = lit ? col.tracer : col.shock; g.textAlign = xm > W - 80 ? 'right' : 'left'; g.fillText(m[1], xm + (xm > W - 80 ? -3 : 3), mT + 10 + 14 * (k % 2));
+    });
+    caption(g, W, { pickup: 'lifted off the surface', equip: 'into its place', use: 'used' }[hd.act], '');
+    if (playing && ts >= 0) { g.fillStyle = col.ink; g.fillRect(X(ts), mT, 1.5, ph); }
+  }
+}
+var GRAVITY = 9.81;
 function sceneBlaster(g, W, H, tw) { (an.wp.bo.type !== 'none' ? sceneWeapon : sceneSweeps)(g, W, H, tw); }
 function sceneField(g, W, H, tw) {
   var ff = an.ff, mL = 16, mR = 16, mT = 26, mB = 22, pw = W - mL - mR, ph = H - mT - mB, mx = 0;
@@ -1146,7 +1185,7 @@ function drawScene(tw) {
   var f = fit($('scene')), g = f.g;
   g.fillStyle = col.well; g.fillRect(0, 0, f.W, f.H); g.textBaseline = 'alphabetic';
   (an.kind === 'explosion' ? sceneExplosion : an.kind === 'implosion' ? sceneImplosion : an.kind === 'destruction' ? sceneDestruction :
-    an.kind === 'rotor' ? sceneRotor : an.kind === 'discharge' ? sceneDischarge : an.kind === 'blaster' ? sceneBlaster : an.kind === 'field' ? sceneField : an.kind === 'liquid' ? sceneLiquid : an.kind === 'mechanism' ? sceneMech : an.kind === 'heat' ? sceneHeat : an.kind === 'footsteps' ? sceneFeet : an.kind === 'voice' ? sceneVoice : an.kind === 'recording' ? sceneRecording :
+    an.kind === 'rotor' ? sceneRotor : an.kind === 'discharge' ? sceneDischarge : an.kind === 'blaster' ? sceneBlaster : an.kind === 'field' ? sceneField : an.kind === 'liquid' ? sceneLiquid : an.kind === 'mechanism' ? sceneMech : an.kind === 'heat' ? sceneHeat : an.kind === 'footsteps' ? sceneFeet : an.kind === 'voice' ? sceneVoice : an.kind === 'handling' ? sceneHand : an.kind === 'recording' ? sceneRecording :
     !an.tr ? sceneSpectrum : sceneProjectile)(g, f.W, f.H, tw);
 }
 function columns(v, W) {
@@ -1272,6 +1311,11 @@ function readouts() {
     items = mechReadouts(an.mc, p, peak);
   } else if (an.kind === 'heat') {
     items = heatReadouts(an.th, p, peak);
+  } else if (an.kind === 'handling') {
+    var hd = an.hd, ob = hd.ob;
+    items = [['Object', fMass(ob.m) + (hd.n > 1 ? ' each, ' + hd.n + ' of them' : '')], ['Action', { pickup: 'picked up', drop: 'dropped ' + fLen(hd.h), equip: 'put away', use: 'used' }[hd.act]],
+      ['Bounces', hd.act === 'drop' ? String(hd.bounces.length) + ', restitution ' + ob.e.toFixed(2) : 'n/a'], ['Settles', hd.spin ? 'spins out over ' + fTime(hd.spin) : hd.bounces.length ? 'after ' + fTime(hd.bounces[hd.bounces.length - 1].t - hd.bounces[0].t) : 'n/a'],
+      ['Length', fTime(hd.dur)], ['Peak at the ear', peak]];
   } else if (an.kind === 'voice') {
     var cr = an.cr;
     items = [['Tract', fLen(cr.L) + ', formants every ' + fHz(cr.dF)], ['Formants', cr.fm.slice(0, 3).map(function (f) { return fHz(f); }).join(', ')],
