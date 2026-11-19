@@ -2657,6 +2657,102 @@ function feetLayers(pl, p, o, rnd, layers, ev, lab) {
   pl.steps.forEach(function (st, si) { ev.push({ k: 'impact', t: tA + st.t, label: lab && si === 0 ? 'step' : '' }); });
 }
 
+/* ---------- voices ----------
+   Source and filter. The folds pulse at f0 (a Rosenberg flow pulse; its closing phase shortens with effort, so a
+   hard call is brighter); the tract, a tube about 17 cm long in a 70 kg mammal and scaling as the cube root of mass,
+   rings at its formants, odd multiples of c / 4L, so a larger animal has lower and closer formants (formant
+   dispersion is how animals judge size); pitch falls with size too. Hard calls show the nonlinear phenomena of real
+   roars and screams: period doubling (a subharmonic at f0/2), a growl from the false folds near 30 Hz, and breaks.
+   Breath is turbulence at the glottis through the same tract. A reptile mostly hisses; a robot buzzes on quantised
+   pitches through a speaker in a metal can. */
+var CALLS = {
+  /* dur s, then f0 and jaw (formant scale) contours as [t 0..1, value] points, effort, rough, breath */
+  idle:   { dur: 0.45, f0: [[0, 1], [1, 0.85]], jaw: [[0, 0.9], [1, 0.9]], eff: 0.3, rough: 0.15, breath: 0.35, onset: 0.04 },
+  alert:  { dur: 0.2, f0: [[0, 1.35], [0.3, 1.25], [1, 1]], jaw: [[0, 1.05], [0.4, 1.2], [1, 1]], eff: 0.9, rough: 0.3, breath: 0.2, onset: 0.008 },
+  attack: { dur: 1.5, f0: [[0, 0.9], [0.35, 1.2], [1, 0.8]], jaw: [[0, 0.9], [0.3, 1.25], [1, 1]], eff: 1, rough: 0.85, breath: 0.45, onset: 0.06 },
+  pain:   { dur: 0.45, f0: [[0, 1.8], [0.25, 2.4], [1, 1.2]], jaw: [[0, 1.1], [1, 1]], eff: 0.8, rough: 0.1, breath: 0.25, onset: 0.01 },
+  death:  { dur: 1.9, f0: [[0, 1], [1, 0.6]], jaw: [[0, 1.05], [1, 0.85]], eff: 0.5, rough: 0.6, breath: 0.6, onset: 0.05 }
+};
+function contour(pts, x) { for (var k = 1; k < pts.length; k++) if (x <= pts[k][0]) return pts[k - 1][1] + (pts[k][1] - pts[k - 1][1]) * (x - pts[k - 1][0]) / (pts[k][0] - pts[k - 1][0]); return pts[pts.length - 1][1]; }
+function planVoice(q, grnd) {
+  var M = Math.max(q.crMass, 0.05), call = CALLS[q.crCall] || CALLS.idle, type = q.crType, L = 0.17 * Math.cbrt(M / 70) * q.crTract;
+  var f0 = clamp(130 * Math.pow(M / 70, -0.3) * q.crPitch, 15, 1500), dur = call.dur * Math.pow(M / 70, 0.12) * q.crLength;
+  var fm = [];
+  for (var k = 0; k < 5; k++) fm.push((2 * k + 1) * C / (4 * L));
+  return { M: M, call: call, callName: q.crCall, type: type, L: L, f0: f0, dF: C / (2 * L), fm: fm, dur: dur, tot: dur + 0.6, r: Math.max(0.3, q.crDist),
+    eff: call.eff * q.crEffort, rough: clamp(call.rough * q.crRough * (type === 'robot' ? 0.5 : 1), 0, 1.5), breath: call.breath * (type === 'reptile' ? (q.crCall === 'alert' ? 4.5 : 1.5) : 1),
+    /* a reptile hisses when wary and bellows when it attacks */
+    voiced: type === 'reptile' ? (q.crCall === 'alert' ? 0.15 : 0.7) : 1,
+    level: 1.5 * Math.pow(M / 70, 0.45), j0: grnd() };
+}
+/* the tract: five formant resonators, retuned every 64 samples to the jaw contour; bandwidths widen with pitch */
+function tractFilter(src, pl, wide) {
+  var n = src.length, out = new Float32Array(n), z = new Float64Array(10), c1 = [0, 0, 0, 0, 0], c2 = [0, 0, 0, 0, 0], gn = [0, 0, 0, 0, 0], i, k, b;
+  for (b = 0; b < n; b += 64) {
+    var x = Math.min(1, b / FS / pl.dur), jaw = contour(pl.call.jaw, x);
+    for (k = 0; k < 5; k++) {
+      /* the jaw raises the first formant most; robots keep a fixed can */
+      var f = Math.min(pl.fm[k] * (k === 0 ? jaw : 1 + (jaw - 1) * 0.4), 0.45 * FS), bw = (50 + 0.06 * f) * wide, R = Math.exp(-Math.PI * bw / FS);
+      c1[k] = 2 * R * Math.cos(TAU * f / FS); c2[k] = R * R; gn[k] = 2 * (1 - R) * Math.sin(TAU * f / FS) / (1 + k * 0.6);
+    }
+    for (i = b; i < Math.min(n, b + 64); i++) {
+      var y = 0;
+      for (k = 0; k < 5; k++) { var v = c1[k] * z[2 * k] - c2[k] * z[2 * k + 1] + gn[k] * src[i]; z[2 * k + 1] = z[2 * k]; z[2 * k] = v; y += v; }
+      out[i] = y;
+    }
+  }
+  return out;
+}
+function voiceLayers(pl, p, o, rnd, layers, ev, lab) {
+  var ns = Math.ceil(pl.tot * FS), nd = Math.ceil(pl.dur * FS), r = pl.r, tA = o.t0 + r / C, i, k;
+  var src = new Float32Array(ns), rough = new Float32Array(ns), br = new Float32Array(ns), body = new Float32Array(ns);
+  var ph = 0, per = 0, amp = 1, prevG = 0, jit = 0.01 + 0.04 * pl.rough, gph = rnd(), robot = pl.type === 'robot', hiss = pl.type === 'reptile';
+  var Tc = 0.2 - 0.12 * clamp(pl.eff, 0, 1), To = 0.4, gr = 22 + 14 * rnd();
+  for (i = 0; i < nd; i++) {
+    var x = i / nd, t = i / FS, env = Math.min(1, t / pl.call.onset) * Math.min(1, (nd - i) / (0.08 * FS));
+    if (pl.callName === 'death') env *= 1 - 0.7 * x;
+    var f = pl.f0 * contour(pl.call.f0, x) * (1 + 0.08 * (pl.eff - 0.5));
+    /* a robot steps from semitone to semitone */
+    if (robot) f = pl.f0 * Math.pow(2, Math.round(12 * Math.log(f / pl.f0) / Math.LN2) / 12);
+    ph += f / FS * (1 + jit * 0.2 * (rnd() - 0.5));
+    if (ph >= 1) { ph -= 1; per++; var u = rnd(); amp = 1 + 0.1 * pl.rough * (u - 0.5); }
+    /* Rosenberg flow and its derivative, the glottal source */
+    var g = ph < To ? 0.5 * (1 - Math.cos(Math.PI * ph / To)) : ph < To + Tc ? Math.cos(Math.PI / 2 * (ph - To) / Tc) : 0;
+    if (robot) g = ph < 0.5 ? 2 * ph : 2 - 2 * ph;
+    var d = (g - prevG) * amp * env; prevG = g;
+    d *= pl.voiced;
+    src[i] = d;
+    /* nonlinear: alternate periods louder and softer (f0/2), and the false-fold growl; a robot is ring-modulated */
+    var mod = robot ? Math.cos(TAU * (90 + 60 * pl.j0) * t) - 1 : pl.rough * ((per % 2 ? 0.45 : -0.45) + 0.6 * Math.sin(TAU * gr * t + 2 * Math.sin(TAU * 3.1 * t)));
+    rough[i] = d * mod;
+    /* breath: turbulence pulsing with the glottal opening */
+    var nz = rnd() * 2 - 1;
+    br[i] = nz * pl.breath * env * (0.3 + 0.7 * g) * 0.15;
+  }
+  /* a closing breath after a dying call */
+  if (pl.callName === 'death') for (i = nd; i < Math.min(ns, nd + Math.round(0.5 * FS)); i++) { var y = (i - nd) / (0.5 * FS); br[i] += (rnd() * 2 - 1) * 0.04 * Math.sin(Math.PI * y); }
+  var wide = robot ? 0.6 : hiss ? 1.6 : 1 + 0.5 * Math.min(1, pl.M / 1000);
+  var vo = tractFilter(src, pl, wide), ro = tractFilter(rough, pl, wide), bo = tractFilter(br, pl, wide);
+  /* the body: a chest cavity under a big animal's voice, or the metal can round a robot's speaker (a short comb) */
+  if (robot) { var D = Math.round(0.0016 * FS); for (i = D; i < ns; i++) body[i] = 0.6 * (vo[i - D] + ro[i - D]); }
+  else {
+    var fc = clamp(90 * Math.cbrt(70 / pl.M), 20, 400), R2 = Math.exp(-Math.PI * fc / (4 * FS)), cc = 2 * R2 * Math.cos(TAU * fc / FS), y1 = 0, y2 = 0;
+    for (i = 0; i < ns; i++) { var yy = cc * y1 - R2 * R2 * y2 + (src[i] + rough[i]); y2 = y1; y1 = yy; body[i] = yy; }
+    /* the chest is set to a quarter of the voice, not measured */
+    scale(body, 0.25 * peakOf(vo) / (peakOf(body) || 1));
+  }
+  /* scale the whole voice to its level at 1 m from the loudest of the four */
+  var pk = Math.max(peakOf(vo), peakOf(bo), 1e-9), Lv = pl.level * pl.eff * (hiss ? 0.6 : 1) / pk, bufs = [vo, ro, bo, body], gs = [o.g1, o.g2, o.g3, o.g4];
+  for (k = 0; k < 4; k++) {
+    if (!(gs[k] > 0)) continue;
+    var b = bufs[k];
+    for (i = 0; i < ns; i++) b[i] *= Lv / r;
+    postLayer(b, r, o.ground);
+    layers.push({ m: b, t: tA, pan: o.pan, g: gs[k] });
+  }
+  ev.push({ k: 'launch', t: tA, label: lab ? pl.callName : '' });
+}
+
 /* ---------- recordings and impulse responses ----------
    Recordings and impulse responses come in from outside as assets: 48 kHz stereo Float32Arrays, set with setAsset()
    (the page decodes the files; the worker gets a copy). Three synthetic examples stand in until a file is loaded. */
@@ -2998,7 +3094,7 @@ var STRENGTH = {
   explosion: { keys: [['exW', 1]] }, implosion: { keys: [['imR0', 1 / 3]] }, destruction: { keys: [['dsMass', 1]] },
   discharge: { keys: [['dcEnergy', 1]] }, blaster: { keys: [['tgEnergy', 1], ['lnEnergy', 1], ['bvChannel', 1], ['bpEnergy', 1]] },
   field: { keys: [['ffHitE', 1]], gain: true }, liquid: { keys: [['lqHeight', 1]] },
-  mechanism: { keys: [], gain: true }, heat: { keys: [], gain: true }, footsteps: { keys: [], gain: true }
+  mechanism: { keys: [], gain: true }, heat: { keys: [], gain: true }, footsteps: { keys: [], gain: true }, voice: { keys: [], gain: true }
 };
 var MAX_TRIGGERS = 32;
 
@@ -3298,7 +3394,7 @@ function planRep(p, seed, k, s) {
     if (kind === 'explosion') q.exDist = p.exDist * a; else if (kind === 'destruction') q.dsDist = p.dsDist * a;
     else if (kind === 'implosion') q.imDist = p.imDist * a; else if (kind === 'discharge') q.dcDist = p.dcDist * a;
     else if (kind === 'blaster') { q.miss = p.miss * a; q.bpStiff = p.bpStiff * (1 + j * 0.3 * (grnd() - 0.5)); q.bvSpeed = p.bvSpeed * (1 + j * 0.1 * (grnd() - 0.5)); }
-    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'heat') q.thDist = p.thDist * a; else if (kind === 'footsteps') q.ftDist = p.ftDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
+    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'heat') q.thDist = p.thDist * a; else if (kind === 'footsteps') q.ftDist = p.ftDist * a; else if (kind === 'voice') q.crDist = p.crDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
     if (kind !== 'projectile') pan = j * 1.4 * (grnd() - 0.5);
   }
   if (kind === 'explosion') out = { ex: planExplosion(q.exW, q.exDist, Math.round(q.exFrags), Math.round(q.exDebris), grnd) };
@@ -3313,6 +3409,7 @@ function planRep(p, seed, k, s) {
   else if (kind === 'mechanism') out = { mc: planMech(q, grnd) };
   else if (kind === 'heat') out = { th: planHeat(q, grnd) };
   else if (kind === 'footsteps') out = { ft: planFeet(q, grnd) };
+  else if (kind === 'voice') out = { cr: planVoice(q, grnd) };
   else if (kind === 'recording') out = { rc: planRecording(q) };
   else {
     out = analyzeProj(q); out.pay = null;
@@ -3370,6 +3467,7 @@ function mixScene(p, seed, only) {
     else if (pl.kind === 'mechanism') mechLayers(pl.mc, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'heat') heatLayers(pl.th, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'footsteps') feetLayers(pl.ft, q, o, rnd, layers, ev, lab);
+    else if (pl.kind === 'voice') voiceLayers(pl.cr, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'recording') recordingLayers(pl.rc, q, o, rnd, layers, ev, lab);
     else projLayers(pl, q, o, rnd, layers, ev, lab);
     if (!trig) tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
@@ -3949,6 +4047,7 @@ var DEFAULTS = { kind: 'projectile',
   mcWear: 0.1, mcRpm: 3000, mcDist: 3,
   thMode: 'cool', thMat: 'steel', thMass: 8, thDT: 400, thTime: 8, thJoints: 6, thStrength: 0.6, thDist: 1.5,
   ftMass: 75, ftLegs: '2', ftFoot: 'boot', ftSurface: 'concrete', ftGait: 'walk', ftSteps: 6, ftGear: 0, ftDist: 2,
+  crType: 'beast', crCall: 'attack', crMass: 190, crPitch: 1, crTract: 1, crEffort: 1, crRough: 1, crLength: 1, crDist: 5,
   seqCount: 1, seqInterval: 0.12, seqJitter: 0.2, seqFrom: 'interval', seqAsset: 'ex:door', seqSens: 0.5, seqDyn: 0.7, seqGuide: -40,
   dsKnock: 'ex:knock', dsLike: 'glass', dsDebris: 'model', grAsset: 'ex:gravel',
   env: 'field', ground: 0.5, trimCrack: 0, trimLaunch: 0, trimWake: 0, trimImpact: 0 };
@@ -4104,7 +4203,20 @@ var PRESETS = [
   { id: 'mech', name: 'Mech walker', p: { kind: 'footsteps', ftFoot: 'robot', ftMass: 6000, ftSteps: 4, ftDist: 15, env: 'field' } },
   { id: 'robodog', name: 'Robot dog', p: { kind: 'footsteps', ftFoot: 'robot', ftLegs: '4', ftMass: 30, ftSteps: 8, env: 'room' } },
   { id: 'clawtiles', name: 'Claws on a hard floor', p: { kind: 'footsteps', ftFoot: 'claw', ftLegs: '4', ftMass: 25, ftSteps: 8, env: 'room' } },
-  { id: 'beast', name: 'Large beast, running', p: { kind: 'footsteps', ftFoot: 'bare', ftLegs: '4', ftMass: 400, ftSurface: 'dirt', ftGait: 'run', ftSteps: 8, ftDist: 8, env: 'field' } }
+  { id: 'beast', name: 'Large beast, running', p: { kind: 'footsteps', ftFoot: 'bare', ftLegs: '4', ftMass: 400, ftSurface: 'dirt', ftGait: 'run', ftSteps: 8, ftDist: 8, env: 'field' } },
+
+  { id: 'roar', name: 'Big cat roar', p: { kind: 'voice', crDist: 10, env: 'field' } },
+  { id: 'bark', name: 'Dog barking', p: { kind: 'voice', crCall: 'alert', crMass: 30, seqCount: 3, seqInterval: 0.4, env: 'urban' } },
+  { id: 'growl', name: 'Wolf growl', p: { kind: 'voice', crCall: 'idle', crMass: 45, crEffort: 0.8, crRough: 3, crLength: 4, crDist: 3, env: 'forest' } },
+  { id: 'grunt', name: 'Grunt', p: { kind: 'voice', crCall: 'idle', crMass: 90, crDist: 2, env: 'room' } },
+  { id: 'hurt', name: 'Small creature hurt', p: { kind: 'voice', crCall: 'pain', crMass: 3, crDist: 2, env: 'forest' } },
+  { id: 'dying', name: 'Beast dying', p: { kind: 'voice', crCall: 'death', crMass: 300, crDist: 4, env: 'field' } },
+  { id: 'giant', name: 'Giant monster roar', p: { kind: 'voice', crMass: 8000, crDist: 30, env: 'valley' } },
+  { id: 'hiss', name: 'Reptile hiss', p: { kind: 'voice', crType: 'reptile', crCall: 'alert', crMass: 80, crLength: 4, crDist: 2, env: 'forest' } },
+  { id: 'dragon', name: 'Dragon roar', p: { kind: 'voice', crType: 'reptile', crMass: 5000, crDist: 20, env: 'valley' } },
+  { id: 'robotalert', name: 'Robot alert', p: { kind: 'voice', crType: 'robot', crCall: 'alert', crMass: 50, seqCount: 3, seqInterval: 0.25, crDist: 2, env: 'indoor' } },
+  { id: 'robottaunt', name: 'Robot taunt', p: { kind: 'voice', crType: 'robot', crMass: 200, crDist: 3, env: 'indoor' } },
+  { id: 'robotdown', name: 'Robot shutting down', p: { kind: 'voice', crType: 'robot', crCall: 'death', crMass: 100, crDist: 2, env: 'indoor' } }
 ];
 var ACTION_DEFAULTS = { slowmo: 1, punch: 0, weight: 0, drive: 0, bite: 0, tail: 0, swell: 0, width: 0, loud: 0 };
 var ACTION_PRESETS = [
@@ -4129,6 +4241,6 @@ function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for 
 root.BFX = { qrCode: qrCode, qrSvg: qrSvg, packPlan: packPlan, unpackPlan: unpackPlan, setAsset: setAsset, getAsset: getAsset, removeAsset: removeAsset, xmpText: xmpText, ixmlText: ixmlText, keywordPaths: keywordPaths, getIR: getIR, detectHits: detectHits, getHits: getHits, measureModes: measureModes, getModes: getModes,
   getGrains: getGrains, features: features, distance: distance, matchScore: matchScore, posToVal: posToVal, monoOf: monoOf, BAND_HZ: BAND_HZ, MAX_TRIGGERS: MAX_TRIGGERS, FIT_TRIES: FIT_TRIES, triggered: triggered, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
   EXAMPLES: EXAMPLES, REC_MAX_S: REC_MAX_S, IR_MAX_S: IR_MAX_S, renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
-  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, MECH_MATS: MECH_MATS, GROUNDS: GROUNDS, FEET: FEET, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
+  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, MECH_MATS: MECH_MATS, GROUNDS: GROUNDS, FEET: FEET, CALLS: CALLS, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
   ACTION_DEFAULTS: ACTION_DEFAULTS, ACTION_PRESETS: ACTION_PRESETS, merge: merge, _wake: wakeLayer, _modal: modalHit, rng: rng };
 })(typeof self !== 'undefined' ? self : globalThis);

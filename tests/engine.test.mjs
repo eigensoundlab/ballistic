@@ -32,7 +32,7 @@ test('presets use only known parameters and every source type has presets', () =
     kinds.add(pr.p.kind || 'projectile');
   }
   assert.equal(new Set(B.PRESETS.map(pr => pr.id)).size, B.PRESETS.length, 'preset ids are unique');
-  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism', 'heat', 'footsteps']) assert.ok(kinds.has(k), k);
+  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism', 'heat', 'footsteps', 'voice']) assert.ok(kinds.has(k), k);
 });
 
 test('every preset renders finite, audible, normalised audio', () => {
@@ -554,4 +554,21 @@ test('a robot leg whines through its swing, louder for a heavier walker', () => 
   const lvl = M => { const p = feet({ ftFoot: 'robot', ftMass: M, ftSteps: 3 }), r = B.renderRaw(p, 3), x = B.renderStems(p, 3)[3].L; let e = 0; for (const v of x) e += v * v; return Math.sqrt(e / x.length) * r.peakPa; };
   assert.ok(lvl(2000) > 3 * lvl(30));
   assert.equal(B.renderStems(feet({ ftFoot: 'boot' }), 3)[3], null, 'a boot carries no servo');
+});
+
+const voice = o => B.merge(B.DEFAULTS, Object.assign({ kind: 'voice', env: 'none', ground: 0 }, o));
+
+test('a larger animal has a longer tract, so lower and closer formants, and a lower voice', () => {
+  const dog = B.analyze(voice({ crMass: 30 }), 3).cr, lion = B.analyze(voice({ crMass: 190 }), 3).cr;
+  assert.ok(Math.abs(dog.L / lion.L - Math.cbrt(30 / 190)) < 1e-9);
+  assert.ok(Math.abs(lion.fm[1] - 3 * lion.fm[0]) < 1e-6 && Math.abs(lion.dF - B.C / (2 * lion.L)) < 1e-9, 'odd multiples of c / 4L');
+  assert.ok(lion.dF < 0.6 * dog.dF && lion.f0 < 0.7 * dog.f0);
+});
+
+test('a voice is periodic at its pitch, and a rough call doubles its period', () => {
+  const at = (q, part) => { const p = voice(q), cr = B.analyze(p, 3).cr, r = B.renderRaw(p, 3), x = B.renderStems(p, 3)[part].L, a = Math.round((0.1 - r.tStart) * FS); return { cr, rate: repRate(x, a, a + Math.round(0.1 * FS), 15, 1600) }; };
+  const clean = at({ crCall: 'idle', crMass: 70, crRough: 0 }, 0), f0 = clean.cr.f0 * 0.98 * (1 + 0.08 * (clean.cr.eff - 0.5));
+  assert.ok(Math.abs(clean.rate / f0 - 1) < 0.06, `${clean.rate} against ${f0}`);
+  const rough = at({ crCall: 'idle', crMass: 70, crRough: 6 }, 1);
+  assert.ok(Math.abs(rough.rate / (f0 / 2) - 1) < 0.1 || rough.rate < 0.6 * f0, `rough part repeats at ${rough.rate}, half of ${f0}`);
 });
