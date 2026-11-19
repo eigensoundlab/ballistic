@@ -2554,6 +2554,109 @@ function heatLayers(pl, p, o, rnd, layers, ev, lab) {
 /* how fast acid works, against the time it takes to eat through */
 function acidRate(t, tf) { return t < tf ? smoothstep(t / 0.4) * (1 + 0.6 * t / tf) : 0.7 * Math.exp(-(t - tf) / 1.2); }
 
+/* ---------- footsteps ----------
+   A step is a heel strike, the surface answering, the roll onto the toe with a scuff, and whatever the walker carries.
+   Cadence follows dynamic similarity: a leg of length l steps at about 1.44 sqrt(v / l) per second, so a person
+   walking at 1.4 m/s steps 1.8 times a second and a giant more slowly. The heel lands with a few percent of the leg's
+   momentum (STEP_EFF of its energy reaches the floor's modes), softened by the sole: the longer the contact, the
+   lower the strike. Hard floors ring (boards also creak, grates rattle), loose ones crunch grain by grain, water
+   splashes and mud lets go with a suck. A robot leg whines through each swing, at 0.003 Pa per root watt of the
+   tenth of m g v that walking takes, as a gearmotor does. */
+var STEP_EFF = 0.003;
+var FEET = { bare: { lp: 700, e: 0.6, toe: 0.4 }, shoe: { lp: 1100, e: 0.8, toe: 0.5 }, boot: { lp: 3500, e: 1, toe: 0.5 }, claw: { lp: 7000, e: 0.7, toe: 0.2 },
+  metal: { lp: 0, e: 1.2, toe: 0.5 }, robot: { lp: 0, e: 1.3, toe: 0.4 } };
+var GROUNDS = {
+  concrete: { hit: 'concrete', sc: 1, thud: 0.4 }, wood: { hit: 'wood', sc: 0.6, thud: 1, creak: 1 }, metal: { hit: 'steel', sc: 1.6, thud: 0.6, rattle: 1 },
+  gravel: { hit: 'dirt', sc: 1, thud: 0.6, grains: { n: 40, dur: 0.14, f: 1800, w: 0.0004, a: 0.25 } },
+  dirt: { hit: 'dirt', sc: 1, thud: 1, grains: { n: 6, dur: 0.1, f: 600, w: 0.002, a: 0.05 } },
+  grass: { hit: 'dirt', sc: 1.3, thud: 0.5, rustle: 1 }, snow: { hit: 'dirt', sc: 1.5, thud: 0.3, grains: { n: 90, dur: 0.17, f: 3000, w: 0.0003, a: 0.14 } },
+  sand: { hit: 'dirt', sc: 0.8, thud: 0.6, shush: 1 }, water: { hit: 'dirt', sc: 1, thud: 0.3, splash: 1 }, mud: { hit: 'dirt', sc: 0.8, thud: 0.8, suck: 1 }
+};
+function planFeet(q, grnd) {
+  var M = Math.max(q.ftMass, 0.5), leg = 0.9 * Math.cbrt(M / 75), legs = q.ftLegs === 4 || q.ftLegs === '4' ? 4 : 2, gait = q.ftGait;
+  var v = (gait === 'run' ? 4 : gait === 'sneak' ? 0.6 : 1.4) * Math.sqrt(leg / 0.9), f = 1.44 * Math.sqrt(v / leg), force = gait === 'run' ? 2.5 : gait === 'sneak' ? 1.02 : 1.2;
+  /* footfalls inside a stride; a four-legged run gallops in pairs */
+  var pat = legs === 2 ? [0, 0.5] : gait === 'run' ? [0, 0.12, 0.45, 0.57] : [0, 0.25, 0.5, 0.75], n = clamp(Math.round(q.ftSteps), 1, 32), steps = [], k;
+  var stride = (legs === 2 ? 2 : 1) / f;
+  for (k = 0; k < n; k++) {
+    var j = grnd(), a = grnd(), s = Math.floor(k / pat.length), b = pat[k % pat.length];
+    steps.push({ t: 0.05 + (s + b) * stride + (j - 0.5) * 0.04 / f, side: k % 2 ? 1 : -1, load: force * (0.9 + 0.2 * a) });
+  }
+  var foot = FEET[q.ftFoot] || FEET.shoe, gr = GROUNDS[q.ftSurface] || GROUNDS.concrete, vh = gait === 'run' ? 1.4 : gait === 'sneak' ? 0.25 : 0.6;
+  var Eh = 0.5 * 0.08 * M * vh * vh;
+  return { M: M, leg: leg, legs: legs, v: v, f: f, steps: steps, foot: foot, footName: q.ftFoot, gr: gr, surf: q.ftSurface, gait: gait, Eh: Eh,
+    roll: gait === 'run' ? 0.03 : gait === 'sneak' ? 0.16 : 0.09, r: Math.max(0.3, q.ftDist), gear: clamp(q.ftGear, 0, 1),
+    dur: steps[n - 1].t + (q.ftSurface === 'water' || q.ftSurface === 'mud' ? 1.1 : 0.7), tMain: steps[0].t };
+}
+function feetLayers(pl, p, o, rnd, layers, ev, lab) {
+  var ns = Math.ceil(pl.dur * FS), r = pl.r, tA = o.t0 + r / C, g = [], sd = [], k, i, M2 = Math.sqrt(pl.M), gr = pl.gr, ft = pl.foot;
+  for (k = 0; k < 4; k++) { g.push(new Float32Array(ns)); sd.push(new Float32Array(ns)); }
+  var evs = [], mud = LIQUIDS.mud, water = LIQUIDS.water;
+  function put(k2, buf, t, pan) { var n0 = Math.round(t * FS); for (var j = 0; j < buf.length && n0 + j < ns; j++) if (n0 + j >= 0) { g[k2][n0 + j] += buf[j]; sd[k2][n0 + j] += buf[j] * pan; } }
+  pl.steps.forEach(function (st, si) {
+    var t = st.t, pan = 0.15 * st.side, E = pl.Eh * st.load * STEP_EFF * ft.e, h, sc = gr.sc * clamp(Math.pow(75 / pl.M, 0.15), 0.3, 3);
+    /* heel: the floor struck through the sole, and the body's weight landing as a low thud */
+    h = modalHit(gr.hit, E, sc, rnd, { noGrains: true });
+    if (ft.lp) { onePoleLP(h, ft.lp); onePoleLP(h, ft.lp); }
+    put(0, h, t, pan);
+    var nt = Math.round(0.035 * FS), th = new Float32Array(nt), At = 0.0012 * pl.M * st.load * gr.thud * (pl.gait === 'sneak' ? 0.3 : 1);
+    for (i = 0; i < nt; i++) th[i] = At * Math.sin(Math.PI * i / nt) * Math.sin(Math.PI * i / nt) * Math.sin(TAU * 55 * i / FS);
+    put(0, th, t, pan);
+    /* the surface */
+    if (gr.creak) { var cr = rnd(); if (cr < 0.6) creakInto(g[1], t + 0.03 + 0.05 * rnd(), 4 + Math.floor(10 * rnd()), 150 + 350 * rnd(), 180 + 250 * rnd(), 0.004 * M2 * st.load, rnd); }
+    if (gr.rattle) { var hr = modalHit('steel', E * 0.3, sc * 2.5, rnd, { maxModes: 4, t60Scale: 0.15, noGrains: true }); put(1, hr, t + 0.012 + 0.015 * rnd(), pan); }
+    if (gr.grains) {
+      /* grains break or knock while the weight comes on, most at its steepest */
+      var G = gr.grains, ng = Math.round(G.n * Math.sqrt(st.load) * Math.cbrt(pl.M / 75));
+      for (i = 0; i < ng; i++) { var u = rnd(), fa = rnd(), ga = rnd(), tg = t + G.dur * Math.sqrt(u); evs.push(evClick(1, tg, G.w * (0.5 + fa), G.a * M2 / 8.7 * (0.3 + ga) * (1 - 0.6 * u), pan + 0.1 * (fa - 0.5))); }
+    }
+    if (gr.rustle) evs.push(evNoise(1, t + 0.005, 0.07, 2500, 9000, 0.06 * M2 / 8.7 * st.load, pan));
+    if (gr.shush) evs.push(evNoise(1, t + 0.01, 0.12, 200, 2200, 0.075 * M2 / 8.7 * st.load, pan));
+    if (gr.splash) {
+      evs.push(evClick(1, t, 0.003, 0.08 * M2 / 8.7 * st.load, pan));
+      evs.push(evNoise(1, t + 0.002, 0.05, 900, 8000, 0.04 * M2 / 8.7 * st.load, pan));
+      for (i = 0; i < 6; i++) { var dt = rnd(), da = rnd(), dp = rnd(); evs.push(evClick(1, t + 0.08 + 0.25 * dt, 0.0015, 0.004, pan + (dp - 0.5) * 0.6)); if (da < 0.5) evs.push(evRing(1, t + 0.085 + 0.25 * dt, 0.0008 + 0.002 * da, 0.002, 0.05, 0.8, 0.1, pan + (dp - 0.5) * 0.6, water)); }
+    }
+    if (gr.suck) {
+      evs.push(evClick(1, t, 0.005, 0.06 * M2 / 8.7 * st.load, pan));
+      /* the foot pulls free: the mud seals round it and lets air in with a gloop */
+      var ta = t + pl.roll + 0.12;
+      evs.push(evDome(1, ta, 0.012 + 0.01 * rnd(), mud, 0.3, pan)); evs.push(evBurst(1, ta + 0.005, 0.015, mud, 0.3, pan));
+    }
+    /* roll onto the toe and push off: a lighter strike and the sole scuffing; rubber on a smooth floor may squeak */
+    h = modalHit(gr.hit, E * ft.toe * 0.4, sc * 1.3, rnd, { noGrains: true, maxModes: 4 });
+    if (ft.lp) { onePoleLP(h, ft.lp * 1.3); onePoleLP(h, ft.lp * 1.3); }
+    put(2, h, t + pl.roll, pan);
+    evs.push(evNoise(2, t + pl.roll + 0.01, 0.03, 1500, 7000, 0.006 * M2 / 8.7 * (pl.gait === 'run' ? 2 : 1), pan));
+    var sq = rnd();
+    if (pl.footName === 'shoe' && (pl.surf === 'wood' || pl.surf === 'concrete') && sq < (pl.gait === 'run' ? 0.35 : 0.08)) {
+      var fsq = 1200 + 1300 * rnd(), nq = Math.round(0.05 * FS), q0 = Math.round((t + pl.roll + 0.02) * FS), phq = 0;
+      for (i = 0; i < nq && q0 + i < ns; i++) { phq += fsq * (1 + 0.03 * Math.sin(TAU * 35 * i / FS)) / FS; var vq = 0.01 * M2 / 8.7 * fsin(phq) * Math.sin(Math.PI * i / nq); g[2][q0 + i] += vq; sd[2][q0 + i] += vq * pan; }
+    }
+    /* what the walker carries jingles; a robot leg's servo whines through the swing before the step */
+    if (pl.gear > 0) for (i = 0; i < 4; i++) { var tj = t + 0.01 + 0.08 * rnd(), fj = rnd(); var hj = modalHit('steel', 2e-5 * pl.gear * M2 / 8.7, 6 + 6 * fj, rnd, { maxModes: 3, t60Scale: 0.1, noGrains: true }); put(3, hj, tj, pan + (fj - 0.5) * 0.4); }
+    if (pl.footName === 'robot') {
+      var sw = 0.5 / pl.f * (pl.legs === 2 ? 1 : 0.5), n0 = Math.round((t - sw) * FS), nw = Math.round(sw * FS), ph1 = 0, ph2 = 0, Aw = 0.003 * Math.sqrt(0.1 * pl.M * GRAV * pl.v), fr = 9000 / 60 * Math.pow(75 / pl.M, 0.2);
+      for (i = 0; i < nw; i++) {
+        if (n0 + i < 0 || n0 + i >= ns) continue;
+        var bell = Math.sin(Math.PI * i / nw); ph1 += 12 * fr * bell / FS; ph2 += 13 * fr * bell / FS;
+        var vw = Aw * bell * (fsin(ph1) + 1.3 * fsin(ph2));
+        g[3][n0 + i] += vw; sd[3][n0 + i] += vw * pan;
+      }
+    }
+  });
+  liquidSynth(evs, g, sd, rnd, false);
+  var gs = [o.g1, o.g2, o.g3, o.g4], pn = o.pan * 0.7;
+  for (k = 0; k < 4; k++) {
+    if (!(gs[k] > 0)) continue;
+    var L = new Float32Array(ns), R = new Float32Array(ns);
+    for (i = 0; i < ns; i++) { L[i] = (g[k][i] * (1 + pn) + sd[k][i]) / r; R[i] = (g[k][i] * (1 - pn) - sd[k][i]) / r; }
+    postLayer(L, r, o.ground); postLayer(R, r, o.ground);
+    layers.push({ L: L, R: R, t: tA, g: gs[k] });
+  }
+  pl.steps.forEach(function (st, si) { ev.push({ k: 'impact', t: tA + st.t, label: lab && si === 0 ? 'step' : '' }); });
+}
+
 /* ---------- recordings and impulse responses ----------
    Recordings and impulse responses come in from outside as assets: 48 kHz stereo Float32Arrays, set with setAsset()
    (the page decodes the files; the worker gets a copy). Three synthetic examples stand in until a file is loaded. */
@@ -2895,7 +2998,7 @@ var STRENGTH = {
   explosion: { keys: [['exW', 1]] }, implosion: { keys: [['imR0', 1 / 3]] }, destruction: { keys: [['dsMass', 1]] },
   discharge: { keys: [['dcEnergy', 1]] }, blaster: { keys: [['tgEnergy', 1], ['lnEnergy', 1], ['bvChannel', 1], ['bpEnergy', 1]] },
   field: { keys: [['ffHitE', 1]], gain: true }, liquid: { keys: [['lqHeight', 1]] },
-  mechanism: { keys: [], gain: true }, heat: { keys: [], gain: true }
+  mechanism: { keys: [], gain: true }, heat: { keys: [], gain: true }, footsteps: { keys: [], gain: true }
 };
 var MAX_TRIGGERS = 32;
 
@@ -3195,7 +3298,7 @@ function planRep(p, seed, k, s) {
     if (kind === 'explosion') q.exDist = p.exDist * a; else if (kind === 'destruction') q.dsDist = p.dsDist * a;
     else if (kind === 'implosion') q.imDist = p.imDist * a; else if (kind === 'discharge') q.dcDist = p.dcDist * a;
     else if (kind === 'blaster') { q.miss = p.miss * a; q.bpStiff = p.bpStiff * (1 + j * 0.3 * (grnd() - 0.5)); q.bvSpeed = p.bvSpeed * (1 + j * 0.1 * (grnd() - 0.5)); }
-    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'heat') q.thDist = p.thDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
+    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'heat') q.thDist = p.thDist * a; else if (kind === 'footsteps') q.ftDist = p.ftDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
     if (kind !== 'projectile') pan = j * 1.4 * (grnd() - 0.5);
   }
   if (kind === 'explosion') out = { ex: planExplosion(q.exW, q.exDist, Math.round(q.exFrags), Math.round(q.exDebris), grnd) };
@@ -3209,6 +3312,7 @@ function planRep(p, seed, k, s) {
   else if (kind === 'liquid') out = { lq: planLiquid(q, grnd) };
   else if (kind === 'mechanism') out = { mc: planMech(q, grnd) };
   else if (kind === 'heat') out = { th: planHeat(q, grnd) };
+  else if (kind === 'footsteps') out = { ft: planFeet(q, grnd) };
   else if (kind === 'recording') out = { rc: planRecording(q) };
   else {
     out = analyzeProj(q); out.pay = null;
@@ -3265,6 +3369,7 @@ function mixScene(p, seed, only) {
     else if (pl.kind === 'liquid') liquidLayers(pl.lq, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'mechanism') mechLayers(pl.mc, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'heat') heatLayers(pl.th, q, o, rnd, layers, ev, lab);
+    else if (pl.kind === 'footsteps') feetLayers(pl.ft, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'recording') recordingLayers(pl.rc, q, o, rnd, layers, ev, lab);
     else projLayers(pl, q, o, rnd, layers, ev, lab);
     if (!trig) tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
@@ -3843,6 +3948,7 @@ var DEFAULTS = { kind: 'projectile',
   mcType: 'slide', mcDrive: 'hydraulic', mcAction: 'close', mcMass: 300, mcMat: 'steel', mcStroke: 1.6, mcAngle: 90, mcTime: 1.8, mcStop: 'rubber', mcLatch: 'bolt',
   mcWear: 0.1, mcRpm: 3000, mcDist: 3,
   thMode: 'cool', thMat: 'steel', thMass: 8, thDT: 400, thTime: 8, thJoints: 6, thStrength: 0.6, thDist: 1.5,
+  ftMass: 75, ftLegs: '2', ftFoot: 'boot', ftSurface: 'concrete', ftGait: 'walk', ftSteps: 6, ftGear: 0, ftDist: 2,
   seqCount: 1, seqInterval: 0.12, seqJitter: 0.2, seqFrom: 'interval', seqAsset: 'ex:door', seqSens: 0.5, seqDyn: 0.7, seqGuide: -40,
   dsKnock: 'ex:knock', dsLike: 'glass', dsDebris: 'model', grAsset: 'ex:gravel',
   env: 'field', ground: 0.5, trimCrack: 0, trimLaunch: 0, trimWake: 0, trimImpact: 0 };
@@ -3982,7 +4088,23 @@ var PRESETS = [
   { id: 'acidcrate', name: 'Acid on a wooden crate', p: { kind: 'heat', thMode: 'acid', thMat: 'wood', thMass: 5, thTime: 3, env: 'room' } },
   { id: 'lavacrate', name: 'Crate into lava', p: { kind: 'heat', thMode: 'lava', thMat: 'wood', thMass: 6, thTime: 3, thDist: 3, env: 'cave' } },
   { id: 'lavasteel', name: 'Steel into lava', p: { kind: 'heat', thMode: 'lava', thMass: 10, thTime: 4, thDist: 3, env: 'cave' } },
-  { id: 'torchcut', name: 'Cutting torch', p: { kind: 'heat', thMode: 'torch', thMass: 4, thTime: 3, env: 'indoor' } }
+  { id: 'torchcut', name: 'Cutting torch', p: { kind: 'heat', thMode: 'torch', thMass: 4, thTime: 3, env: 'indoor' } },
+
+  { id: 'boots', name: 'Boots on concrete', p: { kind: 'footsteps', env: 'indoor' } },
+  { id: 'sneak', name: 'Sneaking on boards', p: { kind: 'footsteps', ftFoot: 'shoe', ftSurface: 'wood', ftGait: 'sneak', ftSteps: 4, env: 'room' } },
+  { id: 'runboards', name: 'Running on boards', p: { kind: 'footsteps', ftSurface: 'wood', ftGait: 'run', ftSteps: 8, env: 'room' } },
+  { id: 'grate', name: 'Boots on a metal grate', p: { kind: 'footsteps', ftSurface: 'metal', env: 'indoor' } },
+  { id: 'gravel', name: 'Walking on gravel', p: { kind: 'footsteps', ftSurface: 'gravel', env: 'field' } },
+  { id: 'snow', name: 'Walking in snow', p: { kind: 'footsteps', ftSurface: 'snow', env: 'forest' } },
+  { id: 'sand', name: 'Walking on sand', p: { kind: 'footsteps', ftFoot: 'shoe', ftSurface: 'sand', env: 'field' } },
+  { id: 'grass', name: 'Walking through grass', p: { kind: 'footsteps', ftFoot: 'shoe', ftSurface: 'grass', env: 'forest' } },
+  { id: 'puddles', name: 'Running through puddles', p: { kind: 'footsteps', ftSurface: 'water', ftGait: 'run', env: 'urban' } },
+  { id: 'mudwade', name: 'Wading through mud', p: { kind: 'footsteps', ftSurface: 'mud', ftSteps: 4, env: 'field' } },
+  { id: 'armour', name: 'Armoured soldier', p: { kind: 'footsteps', ftMass: 110, ftGear: 0.8, env: 'indoor' } },
+  { id: 'mech', name: 'Mech walker', p: { kind: 'footsteps', ftFoot: 'robot', ftMass: 6000, ftSteps: 4, ftDist: 15, env: 'field' } },
+  { id: 'robodog', name: 'Robot dog', p: { kind: 'footsteps', ftFoot: 'robot', ftLegs: '4', ftMass: 30, ftSteps: 8, env: 'room' } },
+  { id: 'clawtiles', name: 'Claws on a hard floor', p: { kind: 'footsteps', ftFoot: 'claw', ftLegs: '4', ftMass: 25, ftSteps: 8, env: 'room' } },
+  { id: 'beast', name: 'Large beast, running', p: { kind: 'footsteps', ftFoot: 'bare', ftLegs: '4', ftMass: 400, ftSurface: 'dirt', ftGait: 'run', ftSteps: 8, ftDist: 8, env: 'field' } }
 ];
 var ACTION_DEFAULTS = { slowmo: 1, punch: 0, weight: 0, drive: 0, bite: 0, tail: 0, swell: 0, width: 0, loud: 0 };
 var ACTION_PRESETS = [
@@ -4007,6 +4129,6 @@ function merge(base, over) { var o = {}, k; for (k in base) o[k] = base[k]; for 
 root.BFX = { qrCode: qrCode, qrSvg: qrSvg, packPlan: packPlan, unpackPlan: unpackPlan, setAsset: setAsset, getAsset: getAsset, removeAsset: removeAsset, xmpText: xmpText, ixmlText: ixmlText, keywordPaths: keywordPaths, getIR: getIR, detectHits: detectHits, getHits: getHits, measureModes: measureModes, getModes: getModes,
   getGrains: getGrains, features: features, distance: distance, matchScore: matchScore, posToVal: posToVal, monoOf: monoOf, BAND_HZ: BAND_HZ, MAX_TRIGGERS: MAX_TRIGGERS, FIT_TRIES: FIT_TRIES, triggered: triggered, prepareIR: prepareIR, fftConvolve: fftConvolve, bodyIR: bodyIR, roomIR: roomIR,
   EXAMPLES: EXAMPLES, REC_MAX_S: REC_MAX_S, IR_MAX_S: IR_MAX_S, renderStems: renderStems, zipFiles: zipFiles, encodeWavFloat: encodeWavFloat, PLATES: PLATES, FF_RATIOS: FF_RATIOS, isLoop: isLoop, LOOP_S: LOOP_S, FRAG_BOOST_DB: FRAG_BOOST_DB, DEBRIS_BOOST_DB: DEBRIS_BOOST_DB, job: job, FS: FS, C: C, TRAJ_HZ: TRAJ_HZ, analyze: analyze, analyzeProj: analyzeProj, posAt: posAt, DS: DS, renderRaw: renderRaw, actionize: actionize, fft: fft,
-  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, MECH_MATS: MECH_MATS, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
+  encodeWav: encodeWav, zipStore: zipStore, peakOf: peakOf, ENVS: ENVS, MATERIALS: MATERIALS, LIQUIDS: LIQUIDS, QUENCH: QUENCH, MECH_MATS: MECH_MATS, GROUNDS: GROUNDS, FEET: FEET, DEFAULTS: DEFAULTS, PRESETS: PRESETS,
   ACTION_DEFAULTS: ACTION_DEFAULTS, ACTION_PRESETS: ACTION_PRESETS, merge: merge, _wake: wakeLayer, _modal: modalHit, rng: rng };
 })(typeof self !== 'undefined' ? self : globalThis);

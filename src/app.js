@@ -17,10 +17,10 @@ function fPress(v) { return v >= 1000 ? (v / 1000).toFixed(v >= 1e5 ? 0 : 1) + '
 function fCount(v) { return String(Math.round(v)); }
 
 var KINDS = [['projectile', 'Projectile'], ['explosion', 'Explosion'], ['implosion', 'Implosion'], ['destruction', 'Destruction'], ['rocket', 'Jet, rocket'], ['rotor', 'Rotor'],
-  ['discharge', 'Discharge'], ['blaster', 'Blaster'], ['field', 'Forcefield'], ['liquid', 'Liquid'], ['mechanism', 'Mechanism'], ['heat', 'Heat'], ['recording', 'Recording']];
+  ['discharge', 'Discharge'], ['blaster', 'Blaster'], ['field', 'Forcefield'], ['liquid', 'Liquid'], ['mechanism', 'Mechanism'], ['heat', 'Heat'], ['footsteps', 'Footsteps'], ['recording', 'Recording']];
 /* two families of sources; Recording places any sound, so it sits in both */
 var SECTIONS = [['action', 'Weapons and energy', ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording']],
-  ['game', 'Game sounds', ['liquid', 'mechanism', 'heat', 'recording']]];
+  ['game', 'Game sounds', ['liquid', 'mechanism', 'heat', 'footsteps', 'recording']]];
 function inSection(sec, k) { return SECTIONS.filter(function (x) { return x[0] === sec; })[0][2].indexOf(k) >= 0; }
 function sectionFor(k) { return inSection(st.section, k) ? st.section : SECTIONS.filter(function (x) { return x[2].indexOf(k) >= 0; })[0][0]; }
 var MATS = [['glass', 'Glass'], ['wood', 'Wood'], ['concrete', 'Concrete'], ['steel', 'Steel']];
@@ -38,7 +38,8 @@ var TRIMS = {
   recording: [['Recording', 'direct, with its ground bounce'], ['Body', 'the recording through it'], null, null],
   liquid: [['Bubbles', 'ringing, collapsing'], ['Impact', 'slap, stream, swell, roar'], ['Surface', 'bursts, droplets'], ['Air', 'vessel, steam, crust']],
   mechanism: [['Drive', 'motor, gears, pump, air'], ['Path', 'rails, ring gear, creak'], ['Body', 'panel modes, rattle'], ['Ends', 'latch, stop, seal, bolt']],
-  heat: [['Pings, fizz', 'slips, bubbles, sparks, crackle'], ['Creaks', 'creaks, groans'], ['Body', 'snaps, the break, the fall, lava'], ['Hiss', 'gas, steam, torch roar']]
+  heat: [['Pings, fizz', 'slips, bubbles, sparks, crackle'], ['Creaks', 'creaks, groans'], ['Body', 'snaps, the break, the fall, lava'], ['Hiss', 'gas, steam, torch roar']],
+  footsteps: [['Heel', 'strike, weight'], ['Surface', 'grains, creaks, rattle, splash'], ['Roll', 'toe, scuff, squeak'], ['Gear', 'what it carries, servos']]
 };
 var MIX_NOTE = {
   projectile: '0 dB keeps the physical balance between layers.',
@@ -53,9 +54,10 @@ var MIX_NOTE = {
   recording: 'A recording has no known level. The body is set to the loudness of the recording; distance, air and ground bounce follow the geometry.',
   liquid: 'Bubbles, impacts, bursts and droplets follow their size and speed. Stream noise, collapses, steam, roar, crust and the vessel resonance are set against them, not measured.',
   mechanism: 'Stops, latches and bolts are struck with the energy the panel carries, a hundredth of it reaching its modes. Drive, path and rattle levels are set against them, not measured.',
-  heat: 'Pings and creaks follow the temperature: each joint slips when its strain passes its grip. Groans, fizz, steam, roar and the fall are set against them, not measured.'
+  heat: 'Pings and creaks follow the temperature: each joint slips when its strain passes its grip. Groans, fizz, steam, roar and the fall are set against them, not measured.',
+  footsteps: 'The heel strike and its weight follow the walker\'s mass and gait. Surface, scuff and gear levels are set against them, not measured.'
 };
-var TH = ['heat'], MC = ['mechanism'], LQ = ['liquid'], P = ['projectile'], X = ['explosion'], I = ['implosion'], D = ['destruction'], K = ['rocket'], T = ['rotor'], PK = ['projectile', 'rocket'], PKT = ['projectile', 'rocket', 'rotor'], G = ['discharge'], W = ['blaster'], F = ['field'], PKTW = ['projectile', 'rocket', 'rotor', 'blaster'], RC = ['recording'], PKW = ['projectile', 'rocket', 'blaster'];
+var FT = ['footsteps'], TH = ['heat'], MC = ['mechanism'], LQ = ['liquid'], P = ['projectile'], X = ['explosion'], I = ['implosion'], D = ['destruction'], K = ['rocket'], T = ['rotor'], PK = ['projectile', 'rocket'], PKT = ['projectile', 'rocket', 'rotor'], G = ['discharge'], W = ['blaster'], F = ['field'], PKTW = ['projectile', 'rocket', 'rotor', 'blaster'], RC = ['recording'], PKW = ['projectile', 'rocket', 'blaster'];
 function fLen(v) { return v >= 1000 ? (v / 1000).toFixed(2) + ' km' : v >= 1 ? v.toFixed(1) + ' m' : v >= 0.01 ? (v * 100).toFixed(1) + ' cm' : (v * 1000).toFixed(1) + ' mm'; }
 function fForce(v) { return v >= 1e6 ? (v / 1e6).toFixed(2) + ' MN' : v >= 1000 ? (v / 1000).toFixed(1) + ' kN' : v.toFixed(0) + ' N'; }
 function fSpeed(v) { return v.toFixed(0) + ' m/s'; }
@@ -190,6 +192,13 @@ var SPEC = [
   { bank: 'source', kinds: TH, when: thIs('heat', 'cool'), id: 'thDT', label: 'Temperature change', min: 5, max: 1000, scale: 'log', fmt: function (v) { return v.toFixed(0) + ' K'; } },
   { bank: 'source', kinds: TH, when: thIs('heat', 'cool'), id: 'thJoints', label: 'Joints', hint: 'each slips two or three times', min: 1, max: 200, scale: 'log', round: 1, fmt: fCount },
   { bank: 'source', kinds: TH, id: 'thTime', label: 'Time', hint: 'for the change, or until it gives way', min: 0.5, max: 12, scale: 'log', fmt: fTime },
+  { bank: 'source', kinds: FT, id: 'ftMass', label: 'Walker mass', min: 0.5, max: 8000, scale: 'log', fmt: fMass },
+  { bank: 'source', kinds: FT, id: 'ftLegs', label: 'Legs', options: [['2', 'Two'], ['4', 'Four']] },
+  { bank: 'source', kinds: FT, id: 'ftFoot', label: 'Foot', options: [['bare', 'Bare, padded'], ['shoe', 'Soft shoe'], ['boot', 'Boot'], ['claw', 'Claws'], ['metal', 'Armoured boot'], ['robot', 'Robot leg']] },
+  { bank: 'source', kinds: FT, id: 'ftGait', label: 'Gait', options: [['sneak', 'Sneak'], ['walk', 'Walk'], ['run', 'Run']] },
+  { bank: 'source', kinds: FT, id: 'ftSurface', label: 'Ground', options: [['concrete', 'Concrete'], ['wood', 'Wooden boards'], ['metal', 'Metal grate'], ['gravel', 'Gravel'], ['dirt', 'Dirt'], ['grass', 'Grass'], ['snow', 'Snow'], ['sand', 'Sand'], ['water', 'Shallow water'], ['mud', 'Mud']] },
+  { bank: 'source', kinds: FT, id: 'ftSteps', label: 'Steps', min: 1, max: 32, round: 1, fmt: fCount },
+  { bank: 'source', kinds: FT, id: 'ftGear', label: 'Gear', hint: 'buckles, armour, keys', min: 0, max: 1, fmt: fPct },
   { bank: 'source', kinds: TH, when: thIs('acid', 'lava', 'torch'), id: 'thStrength', label: 'Strength', hint: 'acid, heat, torch power', min: 0.05, max: 1, fmt: fPct },
   { bank: 'source', kinds: RC, id: 'rcAsset', label: 'Recording', sound: true },
   { bank: 'source', kinds: RC, id: 'rcAssetTools', custom: soundTools('rcAsset') },
@@ -239,6 +248,7 @@ var SPEC = [
   { bank: 'scene', kinds: LQ, id: 'lqDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: MC, id: 'mcDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: TH, id: 'thDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
+  { bank: 'scene', kinds: FT, id: 'ftDist', label: 'Distance', min: 0.3, max: 100, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: X, id: 'exDist', label: 'Distance', min: 3, max: 3000, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: I, id: 'imDist', label: 'Distance', min: 1, max: 2000, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: D, id: 'dsDist', label: 'Distance', min: 1, max: 200, scale: 'log', fmt: fDist },
@@ -410,6 +420,7 @@ function capText() {
     liquid: { drop: 'Cross-section: the drop, the bubble it traps, droplets thrown back.', splash: 'Cross-section: the object, its air cavity, the droplets.',
       pour: 'The vessel filling; the air column above the liquid sets the pitch.', quench: 'Temperature of the steel against time, and how it boils.' }[st.p.lqMode] || 'Bubble pitches heard, ringing and bursting.',
     mechanism: 'Speed of the moving edge against time, and what sounds when.',
+    footsteps: 'Each footfall, left and right, with its load.',
     heat: st.p.thMode === 'heat' || st.p.thMode === 'cool' ? 'Temperature against time; each mark is a joint slipping.' : 'How hard it works against time, and when the part gives way.',
     field: st.p.ffType === 'plasma' ? 'Slow, shear and fast waves, plus the half-frequency ripple.' : 'Modes of the field, level against frequency.' }[k];
 }
@@ -533,6 +544,7 @@ function srcDelay() {
   if (an.kind === 'liquid') return an.lq.r / C;
   if (an.kind === 'mechanism') return an.mc.r / C;
   if (an.kind === 'heat') return an.th.r / C;
+  if (an.kind === 'footsteps') return an.ft.r / C;
   return 0;
 }
 function restTime() {
@@ -553,6 +565,7 @@ function restTime() {
   if (an.kind === 'liquid') return an.lq.loop ? 0 : an.lq.tMain + srcDelay();
   if (an.kind === 'mechanism') return an.mc.tEnd + srcDelay();
   if (an.kind === 'heat') return an.th.tMain + srcDelay();
+  if (an.kind === 'footsteps') return an.ft.tMain + srcDelay();
   if (an.kind === 'recording') return an.rc.fly ? an.rc.dur / 2 + an.rc.missD / C : 0;
   if (!an.tr) return 0;
   if (an.kind === 'rocket' && !an.crack) return an.flight * 0.6;
@@ -1063,6 +1076,20 @@ function sceneHeat(g, W, H, tw) {
   }
   function p() { return st.p; }
 }
+function sceneFeet(g, W, H, tw) {
+  var ft = an.ft, mL = 16, mR = 16, mT = 24, mB = 22, pw = W - mL - mR, ph = H - mT - mB, tmax = ft.dur, ts = tw - srcDelay(), yc = mT + ph / 2;
+  function X(t) { return mL + t / tmax * pw; }
+  g.font = '10px ' + col.mono; g.lineWidth = 1;
+  rangeTicks(g, X, tmax, W, H, mL, mR, 's');
+  g.strokeStyle = col.line; g.beginPath(); g.moveTo(mL, Math.round(yc) + 0.5); g.lineTo(W - mR, Math.round(yc) + 0.5); g.stroke();
+  /* left feet above the line, right below; size by load */
+  ft.steps.forEach(function (s) {
+    var x = X(s.t), y = yc - s.side * ph * 0.25, w = 9 + 4 * s.load, h = 5 + 2 * s.load, lit = playing && ts >= s.t;
+    g.fillStyle = lit ? col.tracer : col.muted; g.beginPath(); g.ellipse(x + w / 2, y, w / 2, h / 2, 0, 0, Math.PI * 2); g.fill();
+  });
+  g.fillStyle = col.muted; g.textAlign = 'left'; g.fillText('left', mL, yc - ph * 0.25 - 10); g.fillText('right', mL, yc + ph * 0.25 + 16);
+  caption(g, W, fSpd(ft.v) + ', ' + (ft.f * 60 * (ft.legs === 2 ? 1 : 2)).toFixed(0) + ' steps a minute', ft.surf);
+}
 function sceneBlaster(g, W, H, tw) { (an.wp.bo.type !== 'none' ? sceneWeapon : sceneSweeps)(g, W, H, tw); }
 function sceneField(g, W, H, tw) {
   var ff = an.ff, mL = 16, mR = 16, mT = 26, mB = 22, pw = W - mL - mR, ph = H - mT - mB, mx = 0;
@@ -1084,7 +1111,7 @@ function drawScene(tw) {
   var f = fit($('scene')), g = f.g;
   g.fillStyle = col.well; g.fillRect(0, 0, f.W, f.H); g.textBaseline = 'alphabetic';
   (an.kind === 'explosion' ? sceneExplosion : an.kind === 'implosion' ? sceneImplosion : an.kind === 'destruction' ? sceneDestruction :
-    an.kind === 'rotor' ? sceneRotor : an.kind === 'discharge' ? sceneDischarge : an.kind === 'blaster' ? sceneBlaster : an.kind === 'field' ? sceneField : an.kind === 'liquid' ? sceneLiquid : an.kind === 'mechanism' ? sceneMech : an.kind === 'heat' ? sceneHeat : an.kind === 'recording' ? sceneRecording :
+    an.kind === 'rotor' ? sceneRotor : an.kind === 'discharge' ? sceneDischarge : an.kind === 'blaster' ? sceneBlaster : an.kind === 'field' ? sceneField : an.kind === 'liquid' ? sceneLiquid : an.kind === 'mechanism' ? sceneMech : an.kind === 'heat' ? sceneHeat : an.kind === 'footsteps' ? sceneFeet : an.kind === 'recording' ? sceneRecording :
     !an.tr ? sceneSpectrum : sceneProjectile)(g, f.W, f.H, tw);
 }
 function columns(v, W) {
@@ -1210,6 +1237,10 @@ function readouts() {
     items = mechReadouts(an.mc, p, peak);
   } else if (an.kind === 'heat') {
     items = heatReadouts(an.th, p, peak);
+  } else if (an.kind === 'footsteps') {
+    var ft = an.ft;
+    items = [['Speed', fSpd(ft.v) + ', ' + ft.gait], ['Cadence', (ft.f * 60 * (ft.legs === 2 ? 1 : 2)).toFixed(0) + ' steps a minute'], ['Leg', fLen(ft.leg)],
+      ['Heel strike', fJ(ft.Eh) + ' of leg energy'], ['Steps', String(ft.steps.length) + ' in ' + fTime(ft.steps[ft.steps.length - 1].t - ft.steps[0].t)], ['Peak at the ear', peak]];
   } else if (an.kind === 'recording') {
     var rc = an.rc, bodyName = BODY_NAMES[rc.body];
     items = [['Recording', rc.src ? rc.name + ', ' + fTime(rc.len) + (rc.len >= B.REC_MAX_S - 0.01 ? ', the first 15 s' : '') : 'none loaded'],

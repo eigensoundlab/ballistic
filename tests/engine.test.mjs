@@ -32,7 +32,7 @@ test('presets use only known parameters and every source type has presets', () =
     kinds.add(pr.p.kind || 'projectile');
   }
   assert.equal(new Set(B.PRESETS.map(pr => pr.id)).size, B.PRESETS.length, 'preset ids are unique');
-  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism', 'heat']) assert.ok(kinds.has(k), k);
+  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism', 'heat', 'footsteps']) assert.ok(kinds.has(k), k);
 });
 
 test('every preset renders finite, audible, normalised audio', () => {
@@ -529,4 +529,29 @@ test('a cutting torch roars from flame on to flame off', () => {
   const p = heat({ thMode: 'torch', thTime: 2 }), th = B.analyze(p, 3).th, r = B.renderRaw(p, 3), x = B.renderStems(p, 3)[3].L;
   const e = (a, b) => { let s = 0; for (let i = Math.round((a - r.tStart) * FS); i < Math.round((b - r.tStart) * FS); i++) s += x[i] * x[i]; return s / ((b - a) * FS); };
   assert.ok(e(0.5, th.tf) > 1000 * e(th.tf + 0.5, th.tf + 0.8), 'off after the cut');
+});
+
+const feet = o => B.merge(B.DEFAULTS, Object.assign({ kind: 'footsteps', env: 'none', ground: 0 }, o));
+
+test('steps come at about 1.44 sqrt(v / l) a second: brisker for a person, slower for a giant', () => {
+  const person = B.analyze(feet({}), 3).ft, giant = B.analyze(feet({ ftMass: 6000 }), 3).ft, run = B.analyze(feet({ ftGait: 'run' }), 3).ft;
+  assert.ok(Math.abs(person.f - 1.8) < 0.05, `walking ${person.f}`);
+  assert.ok(giant.f < 0.75 * person.f && run.f > 1.5 * person.f);
+  const st = person.steps;
+  for (let k = 1; k < st.length; k++) assert.ok(Math.abs((st[k].t - st[k - 1].t) * person.f - 1) < 0.05 && st[k].side === -st[k - 1].side);
+});
+
+test('every footfall is heard where it lands, and loose ground crunches through the step', () => {
+  const p = feet({ ftSurface: 'gravel' }), ft = B.analyze(p, 3).ft, r = B.renderRaw(p, 3), st = B.renderStems(p, 3), heel = st[0].L, grit = st[1].L;
+  const e = (x, a, b) => { let s = 0; for (let i = Math.max(0, Math.round((a - r.tStart) * FS)); i < Math.round((b - r.tStart) * FS); i++) s += x[i] * x[i]; return s / ((b - a) * FS); };
+  for (const s of ft.steps) {
+    assert.ok(e(heel, s.t, s.t + 0.03) > 30 * e(heel, s.t - 0.2, s.t - 0.12), 'heel at the footfall');
+    assert.ok(e(grit, s.t, s.t + 0.12) > 30 * e(grit, s.t - 0.2, s.t - 0.12), 'crunch through the step');
+  }
+});
+
+test('a robot leg whines through its swing, louder for a heavier walker', () => {
+  const lvl = M => { const p = feet({ ftFoot: 'robot', ftMass: M, ftSteps: 3 }), r = B.renderRaw(p, 3), x = B.renderStems(p, 3)[3].L; let e = 0; for (const v of x) e += v * v; return Math.sqrt(e / x.length) * r.peakPa; };
+  assert.ok(lvl(2000) > 3 * lvl(30));
+  assert.equal(B.renderStems(feet({ ftFoot: 'boot' }), 3)[3], null, 'a boot carries no servo');
 });
