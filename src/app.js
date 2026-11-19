@@ -17,10 +17,10 @@ function fPress(v) { return v >= 1000 ? (v / 1000).toFixed(v >= 1e5 ? 0 : 1) + '
 function fCount(v) { return String(Math.round(v)); }
 
 var KINDS = [['projectile', 'Projectile'], ['explosion', 'Explosion'], ['implosion', 'Implosion'], ['destruction', 'Destruction'], ['rocket', 'Jet, rocket'], ['rotor', 'Rotor'],
-  ['discharge', 'Discharge'], ['blaster', 'Blaster'], ['field', 'Forcefield'], ['liquid', 'Liquid'], ['mechanism', 'Mechanism'], ['recording', 'Recording']];
+  ['discharge', 'Discharge'], ['blaster', 'Blaster'], ['field', 'Forcefield'], ['liquid', 'Liquid'], ['mechanism', 'Mechanism'], ['heat', 'Heat'], ['recording', 'Recording']];
 /* two families of sources; Recording places any sound, so it sits in both */
 var SECTIONS = [['action', 'Weapons and energy', ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording']],
-  ['game', 'Game sounds', ['liquid', 'mechanism', 'recording']]];
+  ['game', 'Game sounds', ['liquid', 'mechanism', 'heat', 'recording']]];
 function inSection(sec, k) { return SECTIONS.filter(function (x) { return x[0] === sec; })[0][2].indexOf(k) >= 0; }
 function sectionFor(k) { return inSection(st.section, k) ? st.section : SECTIONS.filter(function (x) { return x[2].indexOf(k) >= 0; })[0][0]; }
 var MATS = [['glass', 'Glass'], ['wood', 'Wood'], ['concrete', 'Concrete'], ['steel', 'Steel']];
@@ -37,7 +37,8 @@ var TRIMS = {
   field: [['Hum', 'modes, ripple, solitons'], ['Emissions', 'corona, chorus'], ['Impact ring', ''], ['Crackle', 'sparks, whistlers']],
   recording: [['Recording', 'direct, with its ground bounce'], ['Body', 'the recording through it'], null, null],
   liquid: [['Bubbles', 'ringing, collapsing'], ['Impact', 'slap, stream, swell, roar'], ['Surface', 'bursts, droplets'], ['Air', 'vessel, steam, crust']],
-  mechanism: [['Drive', 'motor, gears, pump, air'], ['Path', 'rails, ring gear, creak'], ['Body', 'panel modes, rattle'], ['Ends', 'latch, stop, seal, bolt']]
+  mechanism: [['Drive', 'motor, gears, pump, air'], ['Path', 'rails, ring gear, creak'], ['Body', 'panel modes, rattle'], ['Ends', 'latch, stop, seal, bolt']],
+  heat: [['Pings, fizz', 'slips, bubbles, sparks, crackle'], ['Creaks', 'creaks, groans'], ['Body', 'snaps, the break, the fall, lava'], ['Hiss', 'gas, steam, torch roar']]
 };
 var MIX_NOTE = {
   projectile: '0 dB keeps the physical balance between layers.',
@@ -51,9 +52,10 @@ var MIX_NOTE = {
   field: 'A forcefield has no physical scale. Every level here is relative to the hum.',
   recording: 'A recording has no known level. The body is set to the loudness of the recording; distance, air and ground bounce follow the geometry.',
   liquid: 'Bubbles, impacts, bursts and droplets follow their size and speed. Stream noise, collapses, steam, roar, crust and the vessel resonance are set against them, not measured.',
-  mechanism: 'Stops, latches and bolts are struck with the energy the panel carries, a hundredth of it reaching its modes. Drive, path and rattle levels are set against them, not measured.'
+  mechanism: 'Stops, latches and bolts are struck with the energy the panel carries, a hundredth of it reaching its modes. Drive, path and rattle levels are set against them, not measured.',
+  heat: 'Pings and creaks follow the temperature: each joint slips when its strain passes its grip. Groans, fizz, steam, roar and the fall are set against them, not measured.'
 };
-var MC = ['mechanism'], LQ = ['liquid'], P = ['projectile'], X = ['explosion'], I = ['implosion'], D = ['destruction'], K = ['rocket'], T = ['rotor'], PK = ['projectile', 'rocket'], PKT = ['projectile', 'rocket', 'rotor'], G = ['discharge'], W = ['blaster'], F = ['field'], PKTW = ['projectile', 'rocket', 'rotor', 'blaster'], RC = ['recording'], PKW = ['projectile', 'rocket', 'blaster'];
+var TH = ['heat'], MC = ['mechanism'], LQ = ['liquid'], P = ['projectile'], X = ['explosion'], I = ['implosion'], D = ['destruction'], K = ['rocket'], T = ['rotor'], PK = ['projectile', 'rocket'], PKT = ['projectile', 'rocket', 'rotor'], G = ['discharge'], W = ['blaster'], F = ['field'], PKTW = ['projectile', 'rocket', 'rotor', 'blaster'], RC = ['recording'], PKW = ['projectile', 'rocket', 'blaster'];
 function fLen(v) { return v >= 1000 ? (v / 1000).toFixed(2) + ' km' : v >= 1 ? v.toFixed(1) + ' m' : v >= 0.01 ? (v * 100).toFixed(1) + ' cm' : (v * 1000).toFixed(1) + ' mm'; }
 function fForce(v) { return v >= 1e6 ? (v / 1e6).toFixed(2) + ' MN' : v >= 1000 ? (v / 1000).toFixed(1) + ' kN' : v.toFixed(0) + ' N'; }
 function fSpeed(v) { return v.toFixed(0) + ' m/s'; }
@@ -182,6 +184,13 @@ var SPEC = [
   { bank: 'source', kinds: MC, when: mcIs('slide', 'hinge', 'rotate'), id: 'mcStop', label: 'End stop', options: [['hard', 'Hard'], ['rubber', 'Rubber seal'], ['damped', 'Damper']] },
   { bank: 'source', kinds: MC, when: mcIs('slide', 'hinge'), id: 'mcLatch', label: 'Latch', options: [['none', 'None'], ['latch', 'Spring latch'], ['bolt', 'Motor bolt']] },
   { bank: 'source', kinds: MC, id: 'mcWear', label: 'Wear', hint: 'creaks, knocks, rattle', min: 0, max: 1, fmt: fPct },
+  { bank: 'source', kinds: TH, id: 'thMode', label: 'Process', options: [['cool', 'Cooling, ticks'], ['heat', 'Heating, pings'], ['acid', 'Acid eats through'], ['lava', 'Into lava'], ['torch', 'Cutting torch']] },
+  { bank: 'source', kinds: TH, id: 'thMat', label: 'Made of', options: [['steel', 'Steel'], ['aluminium', 'Aluminium'], ['wood', 'Wood'], ['plastic', 'Plastic']] },
+  { bank: 'source', kinds: TH, id: 'thMass', label: 'Mass', min: 0.01, max: 500, scale: 'log', fmt: fMass },
+  { bank: 'source', kinds: TH, when: thIs('heat', 'cool'), id: 'thDT', label: 'Temperature change', min: 5, max: 1000, scale: 'log', fmt: function (v) { return v.toFixed(0) + ' K'; } },
+  { bank: 'source', kinds: TH, when: thIs('heat', 'cool'), id: 'thJoints', label: 'Joints', hint: 'each slips two or three times', min: 1, max: 200, scale: 'log', round: 1, fmt: fCount },
+  { bank: 'source', kinds: TH, id: 'thTime', label: 'Time', hint: 'for the change, or until it gives way', min: 0.5, max: 12, scale: 'log', fmt: fTime },
+  { bank: 'source', kinds: TH, when: thIs('acid', 'lava', 'torch'), id: 'thStrength', label: 'Strength', hint: 'acid, heat, torch power', min: 0.05, max: 1, fmt: fPct },
   { bank: 'source', kinds: RC, id: 'rcAsset', label: 'Recording', sound: true },
   { bank: 'source', kinds: RC, id: 'rcAssetTools', custom: soundTools('rcAsset') },
   { bank: 'source', kinds: RC, id: 'rcMode', label: 'Movement', options: [['place', 'Placed in the scene'], ['flyby', 'Flies past']] },
@@ -229,6 +238,7 @@ var SPEC = [
   { bank: 'scene', kinds: F, id: 'ffDist', label: 'Distance', min: 0.5, max: 200, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: LQ, id: 'lqDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: MC, id: 'mcDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
+  { bank: 'scene', kinds: TH, id: 'thDist', label: 'Distance', min: 0.2, max: 50, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: X, id: 'exDist', label: 'Distance', min: 3, max: 3000, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: I, id: 'imDist', label: 'Distance', min: 1, max: 2000, scale: 'log', fmt: fDist },
   { bank: 'scene', kinds: D, id: 'dsDist', label: 'Distance', min: 1, max: 200, scale: 'log', fmt: fDist },
@@ -271,6 +281,7 @@ var SPEC = [
 SPEC.forEach(function (s) { if (!s.obj) s.obj = 'p'; });
 var SOUND_KEYS = SPEC.filter(function (s) { return s.sound && s.obj === 'p'; }).map(function (s) { return s.id; });
 function isPlasma(p) { return p.ffType === 'plasma'; }
+function thIs() { var m = Array.prototype.slice.call(arguments); return function (p) { return m.indexOf(p.thMode) >= 0; }; }
 function mcIs() { var m = Array.prototype.slice.call(arguments); return function (p) { return m.indexOf(p.mcType) >= 0; }; }
 function lqIs() { var m = Array.prototype.slice.call(arguments); return function (p) { return m.indexOf(p.lqMode) >= 0; }; }
 function isLine(p) { return p.lnType === 'line'; }
@@ -399,6 +410,7 @@ function capText() {
     liquid: { drop: 'Cross-section: the drop, the bubble it traps, droplets thrown back.', splash: 'Cross-section: the object, its air cavity, the droplets.',
       pour: 'The vessel filling; the air column above the liquid sets the pitch.', quench: 'Temperature of the steel against time, and how it boils.' }[st.p.lqMode] || 'Bubble pitches heard, ringing and bursting.',
     mechanism: 'Speed of the moving edge against time, and what sounds when.',
+    heat: st.p.thMode === 'heat' || st.p.thMode === 'cool' ? 'Temperature against time; each mark is a joint slipping.' : 'How hard it works against time, and when the part gives way.',
     field: st.p.ffType === 'plasma' ? 'Slow, shear and fast waves, plus the half-frequency ripple.' : 'Modes of the field, level against frequency.' }[k];
 }
 function syncControls() {
@@ -520,6 +532,7 @@ function srcDelay() {
   if (an.kind === 'field') return an.ff.r / C;
   if (an.kind === 'liquid') return an.lq.r / C;
   if (an.kind === 'mechanism') return an.mc.r / C;
+  if (an.kind === 'heat') return an.th.r / C;
   return 0;
 }
 function restTime() {
@@ -539,6 +552,7 @@ function restTime() {
   if (an.kind === 'field') return 0;
   if (an.kind === 'liquid') return an.lq.loop ? 0 : an.lq.tMain + srcDelay();
   if (an.kind === 'mechanism') return an.mc.tEnd + srcDelay();
+  if (an.kind === 'heat') return an.th.tMain + srcDelay();
   if (an.kind === 'recording') return an.rc.fly ? an.rc.dur / 2 + an.rc.missD / C : 0;
   if (!an.tr) return 0;
   if (an.kind === 'rocket' && !an.crack) return an.flight * 0.6;
@@ -1010,6 +1024,45 @@ function sceneMech(g, W, H, tw) {
   if (playing && ts >= 0 && ts <= tmax) { g.fillStyle = col.ink; g.fillRect(X(ts), mT, 1.5, ph); }
   caption(g, W, 'top speed ' + fSpd(mc.vmax), mc.type === 'switch' ? '' : 'into the stop ' + fJ(mc.Eend));
 }
+var MELT_NAMES = { acid: 'falls into the acid', lava: 'sinks into the lava', torch: 'the cut piece drops' };
+function heatReadouts(th, p, peak) {
+  if (th.mode === 'heat' || th.mode === 'cool') {
+    var w = th.tw / 3, c = [0, 1, 2].map(function (j) { return th.slips.filter(function (x) { return x.t >= j * w && x.t < (j + 1) * w; }).length; });
+    return [['Change', (th.mode === 'cool' ? 'cools ' : 'warms ') + th.dT.toFixed(0) + ' K, time constant ' + fTime(th.tau)], [p.thMat === 'wood' ? 'Creaks' : 'Ticks', String(th.slips.length)],
+      ['By thirds', c.join(', ')], ['Joints', fCount(p.thJoints)], ['Snaps through', th.bangs.length ? String(th.bangs.length) : 'no'], ['Peak at the ear', peak]];
+  }
+  return [['Gives way after', fTime(th.tf)], ['Part', fMass(th.M) + ' of ' + p.thMat], ['Strength', fPct(th.s)], ['Then', MELT_NAMES[th.mode]],
+    ['Length', fTime(th.dur)], ['Peak at the ear', peak]];
+}
+function sceneHeat(g, W, H, tw) {
+  var th = an.th, mL = 34, mR = 14, mT = 24, mB = 22, pw = W - mL - mR, ph = H - mT - mB, tmax = th.dur, i, ts = tw - srcDelay();
+  function X(t) { return mL + t / tmax * pw; }
+  g.font = '10px ' + col.mono; g.lineWidth = 1;
+  rangeTicks(g, X, tmax, W, H, mL, mR, 's');
+  if (th.mode === 'heat' || th.mode === 'cool') {
+    var Y = function (T) { return mT + 10 + (1 - T / th.dT) * (ph - 20); };
+    g.strokeStyle = col.tracer; g.lineWidth = 2; g.beginPath();
+    for (i = 0; i <= 200; i++) { var t = i / 200 * th.tw, T = th.mode === 'heat' ? th.dT * (1 - Math.exp(-t / th.tau)) : th.dT * Math.exp(-t / th.tau); if (i) g.lineTo(X(t), Y(T)); else g.moveTo(X(t), Y(T)); }
+    g.stroke(); g.lineWidth = 1;
+    g.fillStyle = col.muted; g.textAlign = 'right'; g.fillText('+' + th.dT.toFixed(0) + ' K', mL - 4, Y(th.dT) + 3); g.fillText('room', mL - 4, Y(0) + 3);
+    th.slips.forEach(function (sl) { g.fillStyle = playing && ts >= sl.t ? col.shock : col.muted; g.fillRect(Math.round(X(sl.t)), H - mB - 10 - Math.min(14, sl.f * 6), 1.5, Math.min(14, sl.f * 6)); });
+    th.bangs.forEach(function (b) { g.fillStyle = col.ink; g.fillRect(Math.round(X(b.t)) - 1, mT + 4, 3, ph - 8); });
+    caption(g, W, th.slips.length + (p().thMat === 'wood' ? ' creaks' : ' ticks') + ', most while it changes fastest', th.bangs.length ? th.bangs.length + ' snap-through' : '');
+  } else {
+    /* how hard the process works over time, and the moment the part gives way */
+    var act = function (t) { return th.mode === 'acid' ? (t < th.tf ? Math.min(1, t / 0.4) * (1 + 0.6 * t / th.tf) / 1.6 : 0.44 * Math.exp(-(t - th.tf) / 1.2)) :
+      th.mode === 'lava' ? Math.exp(-t / 1.2) * 0.8 + (t < th.tf ? 0.2 : 0) : (t > 0.05 && t < th.tf + 0.35 ? (t > 0.4 && t < th.tf ? 1 : 0.6) : 0); };
+    g.fillStyle = col.line; g.globalAlpha = 0.5; g.beginPath(); g.moveTo(X(0), H - mB);
+    for (i = 0; i <= 300; i++) { var tt = i / 300 * tmax; g.lineTo(X(tt), H - mB - act(tt) * (ph - 14)); }
+    g.lineTo(X(tmax), H - mB); g.closePath(); g.fill(); g.globalAlpha = 1;
+    var x = Math.round(X(th.tf)) + 0.5;
+    g.strokeStyle = col.shock; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(x, mT); g.lineTo(x, H - mB); g.stroke(); g.setLineDash([]);
+    g.fillStyle = col.shock; g.textAlign = x > W - 90 ? 'right' : 'left'; g.fillText(th.label, x + (x > W - 90 ? -4 : 4), mT + 10);
+    if (playing && ts >= 0 && ts <= tmax) { g.fillStyle = col.ink; g.fillRect(X(ts), mT, 1.5, ph); }
+    caption(g, W, { acid: 'the acid works faster as the surface roughens', lava: 'steam first, then it chars and sinks', torch: 'flame on, cut, the piece drops' }[th.mode], 'gives way at ' + fTime(th.tf));
+  }
+  function p() { return st.p; }
+}
 function sceneBlaster(g, W, H, tw) { (an.wp.bo.type !== 'none' ? sceneWeapon : sceneSweeps)(g, W, H, tw); }
 function sceneField(g, W, H, tw) {
   var ff = an.ff, mL = 16, mR = 16, mT = 26, mB = 22, pw = W - mL - mR, ph = H - mT - mB, mx = 0;
@@ -1031,7 +1084,7 @@ function drawScene(tw) {
   var f = fit($('scene')), g = f.g;
   g.fillStyle = col.well; g.fillRect(0, 0, f.W, f.H); g.textBaseline = 'alphabetic';
   (an.kind === 'explosion' ? sceneExplosion : an.kind === 'implosion' ? sceneImplosion : an.kind === 'destruction' ? sceneDestruction :
-    an.kind === 'rotor' ? sceneRotor : an.kind === 'discharge' ? sceneDischarge : an.kind === 'blaster' ? sceneBlaster : an.kind === 'field' ? sceneField : an.kind === 'liquid' ? sceneLiquid : an.kind === 'mechanism' ? sceneMech : an.kind === 'recording' ? sceneRecording :
+    an.kind === 'rotor' ? sceneRotor : an.kind === 'discharge' ? sceneDischarge : an.kind === 'blaster' ? sceneBlaster : an.kind === 'field' ? sceneField : an.kind === 'liquid' ? sceneLiquid : an.kind === 'mechanism' ? sceneMech : an.kind === 'heat' ? sceneHeat : an.kind === 'recording' ? sceneRecording :
     !an.tr ? sceneSpectrum : sceneProjectile)(g, f.W, f.H, tw);
 }
 function columns(v, W) {
@@ -1155,6 +1208,8 @@ function readouts() {
     items = liquidReadouts(an.lq, p, peak);
   } else if (an.kind === 'mechanism') {
     items = mechReadouts(an.mc, p, peak);
+  } else if (an.kind === 'heat') {
+    items = heatReadouts(an.th, p, peak);
   } else if (an.kind === 'recording') {
     var rc = an.rc, bodyName = BODY_NAMES[rc.body];
     items = [['Recording', rc.src ? rc.name + ', ' + fTime(rc.len) + (rc.len >= B.REC_MAX_S - 0.01 ? ', the first 15 s' : '') : 'none loaded'],

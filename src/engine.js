@@ -2411,6 +2411,149 @@ function boltInto(buf, t, pl, rnd) {
   addStrike(buf, t + 0.19, 'steel', 0.004 * Math.sqrt(1 + pl.M / 100), 3, rnd, 0, 1);
 }
 
+/* ---------- heat ----------
+   Heating and cooling: a part held at its joints strains by alpha dT. Each joint sticks until the strain passes its
+   friction, then slips and rings a piece of the part, so slips come as fast as the temperature changes: a cooling
+   engine ticks quickly at first and more and more slowly as it nears the room (Newton's law). A large thin panel can
+   snap through as it heats (oil-canning). Wood slips with a short creak instead of a ping.
+   Melting: acid eats through with a fizz of fine hydrogen bubbles and a hiss, the part groans as its section thins and
+   then gives way into the acid; lava sizzles, chars and swallows it; a cutting torch roars, throws sparks and molten
+   drops, and the cut piece falls. */
+var THERM_ALPHA = { steel: 1.2e-5, aluminium: 2.3e-5, wood: 5e-6, plastic: 8e-5 };
+/* each joint slips two or three times over the change, at random thresholds; a slip in steel that has cooled by 400 K
+   gives up about 0.3 mJ, less for a smaller change */
+var SLIP_E = 3e-4, SLIP_N = 2.5;
+function heatSpec(mat) { var s = (MECH_MATS[mat] || MECH_MATS.steel).spec; return s === 'steel' ? MATERIALS.steel : s === 'wood' ? MATERIALS.wood : s; }
+/* a short stick-slip creak: n slips at 'rate' per second through two resonances */
+function creakInto(buf, t, n, rate, f1, amp, rnd) {
+  var n0 = Math.round(t * FS), len = Math.round((n / rate + 0.05) * FS), fs = [f1, 2.4 * f1], z = [0, 0, 0, 0], rr = [], cc = [], gg = [], k, i, ph = 0, x;
+  for (k = 0; k < 2; k++) { var f = Math.min(fs[k], 15000); rr.push(Math.exp(-Math.PI * f / (20 * FS))); cc.push(2 * rr[k] * Math.cos(TAU * f / FS)); gg.push(Math.sin(TAU * f / FS)); }
+  for (i = 0; i < len && n0 + i < buf.length; i++) {
+    x = 0;
+    if (i < len - 0.05 * FS) { ph += rate / FS; if (ph >= 1) { ph -= 1 + 0.1 * (rnd() - 0.5); x = amp * (0.7 + 0.6 * rnd()); } }
+    var y = 0;
+    for (k = 0; k < 2; k++) { var v = cc[k] * z[2 * k] - rr[k] * rr[k] * z[2 * k + 1] + x * gg[k]; z[2 * k + 1] = z[2 * k]; z[2 * k] = v; y += v / (1 + k); }
+    if (n0 + i >= 0) buf[n0 + i] += y;
+  }
+}
+function planHeat(q, grnd) {
+  var mode = q.thMode, mm = MECH_MATS[q.thMat] || MECH_MATS.steel, M = Math.max(q.thMass, 0.01), L = clamp(Math.sqrt(M / (mm.rho * mm.h)), 0.03, 6), Tw = clamp(q.thTime, 0.5, 12);
+  var pl = { mode: mode, mat: q.thMat, spec: heatSpec(q.thMat), M: M, L: L, sc: clamp(0.6 / L, 0.15, 12), r: Math.max(0.3, q.thDist), tw: Tw, slips: [], bangs: [], s: clamp(q.thStrength, 0.05, 1) };
+  if (mode === 'heat' || mode === 'cool') {
+    /* the temperature eases by e^-t/tau with tau a third of the window; joints with random friction slip in turn */
+    var tau = Tw / 3, nj = clamp(Math.round(q.thJoints), 1, 200), thr = [], acc = [], k, i, dT = q.thDT, th0 = dT / SLIP_N;
+    for (k = 0; k < nj; k++) { var u1 = grnd(), u2 = grnd(); thr.push(th0 * Math.exp(0.5 * (u1 + u2 - 1))); acc.push(thr[k] * grnd()); }
+    var last = mode === 'heat' ? 0 : dT, tot = 0, snap = mode === 'heat' && q.thMat !== 'wood' && L > 0.6 ? dT * 0.45 : -1;
+    for (i = 1; i <= Tw * 1000; i++) {
+      var t = i / 1000, T = mode === 'heat' ? dT * (1 - Math.exp(-t / tau)) : dT * Math.exp(-t / tau), step = Math.abs(T - last);
+      last = T; tot += step;
+      for (k = 0; k < nj; k++) {
+        acc[k] += step * (0.6 + 0.8 * ((k * 0.618) % 1));
+        if (acc[k] >= thr[k]) {
+          acc[k] -= thr[k] * (0.6 + 0.4 * grnd());
+          var sz = grnd(), pn = grnd();
+          pl.slips.push({ t: t, E: SLIP_E * dT / 400 * (thr[k] / th0) * (thr[k] / th0), f: thr[k] / th0, sc: pl.sc * (1.2 + 3 * sz), pan: (pn * 2 - 1) * 0.7 });
+        }
+      }
+      if (snap > 0 && tot >= snap) { pl.bangs.push({ t: t, E: 0.005 * M * (dT / 100) }); snap = tot + dT * 0.4; }
+    }
+    pl.dur = Tw + 0.6; pl.tMain = pl.slips.length ? pl.slips[0].t : 0; pl.label = mode === 'heat' ? 'first slip' : 'first tick';
+    pl.tau = tau; pl.dT = dT;
+  } else {
+    pl.tf = Tw; pl.tMain = Tw; pl.label = mode === 'torch' ? 'piece drops' : 'gives way';
+    pl.dur = Tw + (mode === 'acid' ? 1.8 : mode === 'lava' ? 1.6 : 1.3);
+  }
+  return pl;
+}
+function heatLayers(pl, p, o, rnd, layers, ev, lab) {
+  var ns = Math.ceil(pl.dur * FS), r = pl.r, tA = o.t0 + r / C, g = [], k, i, t, gb, M2 = Math.sqrt(pl.M), s = pl.s;
+  for (k = 0; k < 4; k++) g.push(new Float32Array(ns));
+  var sides = [new Float32Array(ns), new Float32Array(ns), new Float32Array(ns), new Float32Array(ns)];
+  if (pl.mode === 'heat' || pl.mode === 'cool') {
+    pl.slips.forEach(function (sl) {
+      if (pl.mat === 'wood') creakInto(g[1], sl.t, 3 + Math.floor(12 * rnd()), 180 + 500 * rnd(), 300 * sl.sc, 0.0003 * M2 * sl.f, rnd);
+      else {
+        /* small bolted parts: a short tink */
+        var h = modalHit(pl.spec, sl.E, sl.sc, rnd, { maxModes: 4, t60Scale: 0.06, noGrains: true }), n0 = Math.round(sl.t * FS);
+        for (i = 0; i < h.length && n0 + i < ns; i++) { g[0][n0 + i] += h[i]; sides[0][n0 + i] += h[i] * sl.pan; }
+      }
+    });
+    pl.bangs.forEach(function (b) { addStrike(g[2], b.t, pl.spec, b.E, pl.sc * 0.8, rnd, 0, 1); });
+  } else {
+    var tf = pl.tf, acid = LIQUIDS.acid, lava = LIQUIDS.lava, evs = [], mids = [g[0], g[1], g[2], g[3]];
+    if (pl.mode === 'acid') {
+      /* the reaction speeds up as the surface roughens, then the fallen piece keeps fizzing in the pool */
+      var hiss = unitNoise(ns, rnd, 9000, 3000), rate = 1500 * s * Math.sqrt(pl.M), nb = Math.min(Math.round(rate * pl.dur), LQ_CAP * Math.round(pl.dur)), wb = Math.sqrt(rate * pl.dur / Math.max(1, nb));
+      for (i = 0; i < nb; i++) {
+        var tb = rnd() * pl.dur, keep = rnd(), ab = rnd(), pb = (rnd() * 2 - 1) * 0.5, rr = acidRate(tb, tf);
+        /* hydrogen bubbles ring as they leave the metal and burst at the top; set against the hiss */
+        if (keep < rr / 1.6) { evs.push(evBurst(0, tb, 0.0002 + 0.0003 * ab, acid, wb * 30, pb)); if (ab < 0.25) evs.push(evRing(0, tb, 0.0004 + 0.0024 * ab, 0.01, 0.03 * wb, 0.6, 0.1, pb, acid)); }
+      }
+      for (i = 0; i < ns; i++) g[3][i] += 0.004 * s * M2 * hiss[i] * acidRate(i / FS, tf);
+      gb = groanBuf(pl.mat === 'wood' ? 'creak' : 'groan', pl.spec, pl.sc, tf * 0.75, rnd);
+      toPeak(gb, 0.03 * M2);
+      addAt(g[1], gb, tf * 0.25);
+      addStrike(g[2], tf, pl.spec, 0.002 * pl.M, pl.sc * 1.5, rnd, 0, 1);
+      /* the piece drops 30 cm into the pool */
+      var tl = tf + 0.25;
+      evs.push(evClick(2, tl, 0.004, 0.05 * M2, 0));
+      evs.push(evNoise(2, tl + 0.001, 0.04, 800, 7000, 0.03 * M2, 0));
+      for (i = 0; i < 6; i++) { var dt = rnd(), da = rnd(), dp = rnd(); evs.push(evRing(2, tl + 0.05 + 0.3 * dt, 0.001 + 0.002 * da, 0.002, 0.05, 0.8, 0.1, (dp * 2 - 1) * 0.5, acid)); }
+    } else if (pl.mode === 'lava') {
+      /* moisture flashes to steam at once; wood and plastic char and crackle; gas bubbles up round it; it sinks */
+      var steam = unitNoise(ns, rnd, 10000, 2000), burns = pl.mat === 'wood' || pl.mat === 'plastic';
+      for (i = 0; i < ns; i++) { t = i / FS; g[3][i] += 0.08 * M2 * s * steam[i] * Math.exp(-t / (burns ? 1.2 : 0.5)) * Math.min(1, t / 0.01); }
+      var nc = Math.round((burns ? 60 : 15) * tf * s);
+      for (i = 0; i < nc; i++) {
+        var tc = 0.2 + rnd() * (tf - 0.2), ac = rnd(), pc = (rnd() * 2 - 1) * 0.5;
+        if (burns) evs.push(evClick(0, tc, 0.0003 + 0.001 * ac, 0.15 * M2 * Math.pow(ac, 2), pc));
+        else evs.push(evTone(0, tc, 1500 * pl.sc * (1 + 3 * ac), 0.02, 0.02 * M2 * ac, 0, pc));
+      }
+      var nq = Math.round(200 * s);
+      for (i = 0; i < nq; i++) { var tq = rnd() * 1.2, aq = rnd(); evs.push(evCollapse(0, tq, 0.0005 + 0.001 * aq, 0.01 * Math.exp(-tq / 0.4), (rnd() * 2 - 1) * 0.3)); }
+      var nl = Math.round(3 * tf * s + 2);
+      for (i = 0; i < nl; i++) { var tg = 0.3 + rnd() * tf, ag = rnd(), pg = (rnd() * 2 - 1) * 0.6; evs.push(evDome(2, tg, 0.01 + 0.03 * ag, lava, 0.1, pg)); evs.push(evBurst(2, tg, 0.01 + 0.03 * ag, lava, 0.1, pg)); }
+      evs.push(evDome(2, tf, 0.06 * Math.cbrt(pl.M / 5), lava, 0.2, 0));
+      evs.push(evBurst(2, tf, 0.06 * Math.cbrt(pl.M / 5), lava, 0.2, 0));
+      gb = groanBuf(pl.mat === 'wood' ? 'creak' : pl.mat === 'plastic' ? 'tick' : 'groan', pl.spec, pl.sc, tf * 0.8, rnd);
+      toPeak(gb, 0.02 * M2);
+      addAt(g[1], gb, tf * 0.2);
+    } else {
+      /* torch: a jet of burning gas, roar under it, sparks while it cuts, drops of molten steel hitting the floor */
+      var Pt = 5 + 25 * s, roarHi = jetNoise(ns, 2500, rnd, false), roarLo = jetNoise(ns, 300, rnd, false), sparks = crackleNoise(ns, 900, rnd, false);
+      var on = 0.05, off = tf + 0.35;
+      for (i = 0; i < ns; i++) {
+        t = i / FS;
+        var e = t < on ? 0 : t < off ? Math.min(1, (t - on) / 0.04) : Math.max(0, 1 - (t - off) / 0.05), cut = t > 0.4 && t < tf ? Math.min(1, (t - 0.4) / 0.2) : 0;
+        g[3][i] += 0.012 * Math.sqrt(Pt) * e * (roarHi[i] + 0.7 * roarLo[i]);
+        g[0][i] += 0.01 * Math.sqrt(Pt) * cut * sparks[i];
+      }
+      evs.push(evClick(3, on, 0.004, 0.15, 0));
+      evs.push(evClick(3, off, 0.003, 0.08, 0));
+      for (t = 0.6; t < tf; t += 0.08 + 0.15 * rnd()) {
+        var pd = (rnd() * 2 - 1) * 0.4, drop = t + Math.sqrt(2 * 0.8 / GRAV);
+        evs.push(evClick(2, drop, 0.0006, 0.01, pd));
+        evs.push(evNoise(2, drop + 0.001, 0.06, 2500, 10000, 0.006, pd));
+      }
+      var tl2 = tf + Math.sqrt(2 * 0.5 / GRAV);
+      addStrike(g[2], tl2, pl.spec, 0.5 * pl.M * GRAV * 0.5 * STOP_EFF, pl.sc, rnd, 0, 1);
+      addStrike(g[2], tl2 + 0.12, pl.spec, 0.1 * pl.M * GRAV * 0.5 * STOP_EFF, pl.sc * 1.1, rnd, 0, 1);
+    }
+    liquidSynth(evs, mids, sides, rnd, false);
+  }
+  var gs = [o.g1, o.g2, o.g3, o.g4], pn = o.pan * 0.7;
+  for (k = 0; k < 4; k++) {
+    if (!(gs[k] > 0)) continue;
+    var L = new Float32Array(ns), R = new Float32Array(ns);
+    for (i = 0; i < ns; i++) { L[i] = (g[k][i] * (1 + pn) + sides[k][i]) / r; R[i] = (g[k][i] * (1 - pn) - sides[k][i]) / r; }
+    postLayer(L, r, o.ground); postLayer(R, r, o.ground);
+    layers.push({ L: L, R: R, t: tA, g: gs[k] });
+  }
+  ev.push({ k: 'impact', t: tA + pl.tMain, label: lab ? pl.label : '' });
+}
+/* how fast acid works, against the time it takes to eat through */
+function acidRate(t, tf) { return t < tf ? smoothstep(t / 0.4) * (1 + 0.6 * t / tf) : 0.7 * Math.exp(-(t - tf) / 1.2); }
+
 /* ---------- recordings and impulse responses ----------
    Recordings and impulse responses come in from outside as assets: 48 kHz stereo Float32Arrays, set with setAsset()
    (the page decodes the files; the worker gets a copy). Three synthetic examples stand in until a file is loaded. */
@@ -2752,7 +2895,7 @@ var STRENGTH = {
   explosion: { keys: [['exW', 1]] }, implosion: { keys: [['imR0', 1 / 3]] }, destruction: { keys: [['dsMass', 1]] },
   discharge: { keys: [['dcEnergy', 1]] }, blaster: { keys: [['tgEnergy', 1], ['lnEnergy', 1], ['bvChannel', 1], ['bpEnergy', 1]] },
   field: { keys: [['ffHitE', 1]], gain: true }, liquid: { keys: [['lqHeight', 1]] },
-  mechanism: { keys: [], gain: true }
+  mechanism: { keys: [], gain: true }, heat: { keys: [], gain: true }
 };
 var MAX_TRIGGERS = 32;
 
@@ -3052,7 +3195,7 @@ function planRep(p, seed, k, s) {
     if (kind === 'explosion') q.exDist = p.exDist * a; else if (kind === 'destruction') q.dsDist = p.dsDist * a;
     else if (kind === 'implosion') q.imDist = p.imDist * a; else if (kind === 'discharge') q.dcDist = p.dcDist * a;
     else if (kind === 'blaster') { q.miss = p.miss * a; q.bpStiff = p.bpStiff * (1 + j * 0.3 * (grnd() - 0.5)); q.bvSpeed = p.bvSpeed * (1 + j * 0.1 * (grnd() - 0.5)); }
-    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
+    else if (kind === 'field') q.ffDist = p.ffDist * a; else if (kind === 'liquid') q.lqDist = p.lqDist * a; else if (kind === 'mechanism') q.mcDist = p.mcDist * a; else if (kind === 'heat') q.thDist = p.thDist * a; else if (kind === 'recording') { q.miss = p.miss * a; q.rcDist = p.rcDist * a; } else q.miss = p.miss * a;
     if (kind !== 'projectile') pan = j * 1.4 * (grnd() - 0.5);
   }
   if (kind === 'explosion') out = { ex: planExplosion(q.exW, q.exDist, Math.round(q.exFrags), Math.round(q.exDebris), grnd) };
@@ -3065,6 +3208,7 @@ function planRep(p, seed, k, s) {
   else if (kind === 'field') out = { ff: planField(q, grnd) };
   else if (kind === 'liquid') out = { lq: planLiquid(q, grnd) };
   else if (kind === 'mechanism') out = { mc: planMech(q, grnd) };
+  else if (kind === 'heat') out = { th: planHeat(q, grnd) };
   else if (kind === 'recording') out = { rc: planRecording(q) };
   else {
     out = analyzeProj(q); out.pay = null;
@@ -3120,6 +3264,7 @@ function mixScene(p, seed, only) {
     else if (pl.kind === 'field') fieldLayers(pl.ff, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'liquid') liquidLayers(pl.lq, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'mechanism') mechLayers(pl.mc, q, o, rnd, layers, ev, lab);
+    else if (pl.kind === 'heat') heatLayers(pl.th, q, o, rnd, layers, ev, lab);
     else if (pl.kind === 'recording') recordingLayers(pl.rc, q, o, rnd, layers, ev, lab);
     else projLayers(pl, q, o, rnd, layers, ev, lab);
     if (!trig) tOff += (p.seqInterval || 0.1) * (1 + (p.seqJitter || 0) * (trnd() - 0.5));
@@ -3697,6 +3842,7 @@ var DEFAULTS = { kind: 'projectile',
   lqTemp: 650, lqThick: 0.002, lqRate: 300, lqSize: 1, lqHeat: 1, lqRain: 8, lqDist: 1.5,
   mcType: 'slide', mcDrive: 'hydraulic', mcAction: 'close', mcMass: 300, mcMat: 'steel', mcStroke: 1.6, mcAngle: 90, mcTime: 1.8, mcStop: 'rubber', mcLatch: 'bolt',
   mcWear: 0.1, mcRpm: 3000, mcDist: 3,
+  thMode: 'cool', thMat: 'steel', thMass: 8, thDT: 400, thTime: 8, thJoints: 6, thStrength: 0.6, thDist: 1.5,
   seqCount: 1, seqInterval: 0.12, seqJitter: 0.2, seqFrom: 'interval', seqAsset: 'ex:door', seqSens: 0.5, seqDyn: 0.7, seqGuide: -40,
   dsKnock: 'ex:knock', dsLike: 'glass', dsDebris: 'model', grAsset: 'ex:gravel',
   env: 'field', ground: 0.5, trimCrack: 0, trimLaunch: 0, trimWake: 0, trimImpact: 0 };
@@ -3825,7 +3971,18 @@ var PRESETS = [
   { id: 'turret', name: 'Turret traverse', p: { kind: 'mechanism', mcType: 'rotate', mcDrive: 'electric', mcAction: 'open', mcMass: 400, mcTime: 2.5, mcStop: 'damped', mcLatch: 'none', mcWear: 0.2, mcDist: 4, env: 'field' } },
   { id: 'servo', name: 'Robot servo', p: { kind: 'mechanism', mcType: 'rotate', mcDrive: 'electric', mcAction: 'open', mcMass: 0.5, mcMat: 'plastic', mcAngle: 60, mcTime: 0.35, mcStop: 'hard', mcLatch: 'none', mcWear: 0.05, mcRpm: 12000, mcDist: 1, env: 'room' } },
   { id: 'switch', name: 'Switch', p: { kind: 'mechanism', mcType: 'switch', mcDrive: 'manual', mcMass: 0.02, mcMat: 'plastic', mcTime: 0.012, mcLatch: 'none', mcDist: 0.6, env: 'room' } },
-  { id: 'lever', name: 'Heavy lever', p: { kind: 'mechanism', mcType: 'switch', mcDrive: 'manual', mcMass: 1.5, mcTime: 0.08, mcLatch: 'none', mcWear: 0.3, mcDist: 1, env: 'indoor' } }
+  { id: 'lever', name: 'Heavy lever', p: { kind: 'mechanism', mcType: 'switch', mcDrive: 'manual', mcMass: 1.5, mcTime: 0.08, mcLatch: 'none', mcWear: 0.3, mcDist: 1, env: 'indoor' } },
+
+  { id: 'engcool', name: 'Engine cooling, ticks', p: { kind: 'heat', thTime: 10, thJoints: 6, env: 'room' } },
+  { id: 'exhaust', name: 'Exhaust pipe ticking', p: { kind: 'heat', thMass: 3, thDT: 500, thTime: 6, thJoints: 5, thDist: 1, env: 'urban' } },
+  { id: 'oven', name: 'Oven heating up', p: { kind: 'heat', thMode: 'heat', thMass: 6, thDT: 200, thTime: 6, thJoints: 5, env: 'room' } },
+  { id: 'roofsun', name: 'Tin roof in the sun', p: { kind: 'heat', thMode: 'heat', thMass: 40, thDT: 40, thTime: 10, thJoints: 8, thDist: 4, env: 'field' } },
+  { id: 'housecool', name: 'House settling at night', p: { kind: 'heat', thMat: 'wood', thMass: 200, thDT: 12, thTime: 12, thJoints: 4, thDist: 3, env: 'room' } },
+  { id: 'acidsteel', name: 'Acid eats through steel', p: { kind: 'heat', thMode: 'acid', thMass: 3, thTime: 4, env: 'room' } },
+  { id: 'acidcrate', name: 'Acid on a wooden crate', p: { kind: 'heat', thMode: 'acid', thMat: 'wood', thMass: 5, thTime: 3, env: 'room' } },
+  { id: 'lavacrate', name: 'Crate into lava', p: { kind: 'heat', thMode: 'lava', thMat: 'wood', thMass: 6, thTime: 3, thDist: 3, env: 'cave' } },
+  { id: 'lavasteel', name: 'Steel into lava', p: { kind: 'heat', thMode: 'lava', thMass: 10, thTime: 4, thDist: 3, env: 'cave' } },
+  { id: 'torchcut', name: 'Cutting torch', p: { kind: 'heat', thMode: 'torch', thMass: 4, thTime: 3, env: 'indoor' } }
 ];
 var ACTION_DEFAULTS = { slowmo: 1, punch: 0, weight: 0, drive: 0, bite: 0, tail: 0, swell: 0, width: 0, loud: 0 };
 var ACTION_PRESETS = [

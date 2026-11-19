@@ -32,7 +32,7 @@ test('presets use only known parameters and every source type has presets', () =
     kinds.add(pr.p.kind || 'projectile');
   }
   assert.equal(new Set(B.PRESETS.map(pr => pr.id)).size, B.PRESETS.length, 'preset ids are unique');
-  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism']) assert.ok(kinds.has(k), k);
+  for (const k of ['projectile', 'explosion', 'implosion', 'destruction', 'rocket', 'rotor', 'discharge', 'blaster', 'field', 'recording', 'liquid', 'mechanism', 'heat']) assert.ok(kinds.has(k), k);
 });
 
 test('every preset renders finite, audible, normalised audio', () => {
@@ -496,4 +496,37 @@ test('a pneumatic cylinder hisses while it moves and vents after it stops', () =
   const e = (a, b) => { let s = 0; for (let i = Math.round((a - r.tStart) * FS); i < Math.round((b - r.tStart) * FS); i++) s += x[i] * x[i]; return s / ((b - a) * FS); };
   assert.ok(e(mc.tEnd + 0.13, mc.tEnd + 0.33) > 10 * e(mc.t0 + 0.1, mc.tEnd - 0.1), 'the vent is far louder than the stroke');
   assert.ok(e(mc.t0 + 0.1, mc.tEnd - 0.1) > 100 * e(0, mc.t0 - 0.03), 'quiet before the valve opens');
+});
+
+const heat = o => B.merge(B.DEFAULTS, Object.assign({ kind: 'heat', env: 'none', ground: 0 }, o));
+
+test('a cooling part ticks most while it cools fastest, each joint two or three times', () => {
+  for (const joints of [6, 30]) {
+    const th = B.analyze(heat({ thMode: 'cool', thJoints: joints, thTime: 9 }), 3).th, w = th.tw / 3;
+    const c = [0, 1, 2].map(j => th.slips.filter(x => x.t >= j * w && x.t < (j + 1) * w).length);
+    assert.ok(c[0] > c[1] && c[1] >= c[2], `by thirds ${c}`);
+    assert.ok(th.slips.length >= 2 * joints && th.slips.length <= 4 * joints, `${th.slips.length} slips from ${joints} joints`);
+  }
+});
+
+test('only a large thin sheet snaps through as it heats', () => {
+  assert.ok(B.analyze(heat({ thMode: 'heat', thMass: 40, thDT: 40 }), 3).th.bangs.length >= 1, 'a roof sheet');
+  assert.equal(B.analyze(heat({ thMode: 'heat', thMass: 2, thDT: 40 }), 3).th.bangs.length, 0, 'a small part');
+  assert.equal(B.analyze(heat({ thMode: 'cool', thMass: 40, thDT: 40 }), 3).th.bangs.length, 0, 'cooling');
+  assert.equal(B.analyze(heat({ thMode: 'heat', thMat: 'wood', thMass: 200, thDT: 40 }), 3).th.bangs.length, 0, 'wood');
+});
+
+test('acid fizzes from the start, the part gives way on time and falls into the pool', () => {
+  const p = heat({ thMode: 'acid', thMass: 3, thTime: 3 }), th = B.analyze(p, 3).th, r = B.renderRaw(p, 3), st = B.renderStems(p, 3);
+  const e = (x, a, b) => { let s = 0; for (let i = Math.round((a - r.tStart) * FS); i < Math.round((b - r.tStart) * FS); i++) s += x[i] * x[i]; return s / ((b - a) * FS); };
+  assert.ok(e(st[0].L, 0.5, 1.5) > 100 * e(st[0].L, 0, 0.02) || e(st[0].L, 0, 0.02) === 0, 'fizz builds');
+  const body = st[2].L;
+  assert.ok(e(body, th.tf - 0.01, th.tf + 0.05) > 30 * e(body, th.tf - 0.5, th.tf - 0.1), 'the break');
+  assert.ok(e(body, th.tf + 0.24, th.tf + 0.34) > 30 * e(body, th.tf - 0.5, th.tf - 0.1), 'the splash as it lands');
+});
+
+test('a cutting torch roars from flame on to flame off', () => {
+  const p = heat({ thMode: 'torch', thTime: 2 }), th = B.analyze(p, 3).th, r = B.renderRaw(p, 3), x = B.renderStems(p, 3)[3].L;
+  const e = (a, b) => { let s = 0; for (let i = Math.round((a - r.tStart) * FS); i < Math.round((b - r.tStart) * FS); i++) s += x[i] * x[i]; return s / ((b - a) * FS); };
+  assert.ok(e(0.5, th.tf) > 1000 * e(th.tf + 0.5, th.tf + 0.8), 'off after the cut');
 });
